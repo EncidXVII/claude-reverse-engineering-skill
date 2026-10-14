@@ -1,6 +1,6 @@
 {
   "name": "reverse-engineering",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "description": "Reverse engineering skill for Claude Code and other AI coding agents.",
   "author": {
     "name": "EncidXVII",
@@ -29,5 +29,8 @@
     "ctf",
     "security-research",
     "mcp"
-  ]
+  ],
+  "documentationUrl": "https://github.com/EncidXVII/claude-reverse-engineering-skill#readme",
+  "supportUrl": "https://github.com/EncidXVII/claude-reverse-engineering-skill/issues",
+  "privacyPolicyUrl": "https://github.com/EncidXVII/claude-reverse-engineering-skill/blob/main/PRIVACY.md"
 }
