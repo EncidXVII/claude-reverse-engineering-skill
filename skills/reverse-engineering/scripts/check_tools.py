@@ -20,6 +20,7 @@ Tasks: triage, native, debug, android, ios, dotnet, java, js, wasm, dynamic,
 from __future__ import annotations
 
 import argparse
+import glob
 import importlib.util
 import json
 import os
@@ -167,17 +168,29 @@ TASKS = {
 }
 
 
-def ghidra_dir():
-    """Ghidra isn't put on PATH by its installer; find it via the usual env vars."""
-    for var in ("GHIDRA_INSTALL_DIR", "GHIDRA_HOME"):
-        d = os.environ.get(var)
+GHIDRA_GLOBS = ("C:/ghidra*", "C:/Program Files/ghidra*", "C:/tools/ghidra*", "~/ghidra*",
+                "~/tools/ghidra*", "/opt/ghidra*", "/usr/share/ghidra*", "/Applications/ghidra*")
+
+
+def ghidra_dir(explicit=None):
+    """Ghidra isn't put on PATH by its installer: use --ghidra-dir, else common install folders.
+
+    Deliberately reads no environment variables; pass --ghidra-dir for a custom location.
+    """
+    candidates = [explicit] if explicit else []
+    for pattern in GHIDRA_GLOBS:
+        candidates += sorted(glob.glob(os.path.expanduser(pattern)), reverse=True)
+    for d in candidates:
         if d and os.path.isdir(os.path.join(d, "support")):
             return d
     return None
 
 
+GHIDRA_FOUND = None   # set from main() so present() can use the --ghidra-dir result
+
+
 def present(name: str) -> bool:
-    if name in ("ghidra", "analyzeHeadless", "pyghidraRun") and ghidra_dir():
+    if name in ("ghidra", "analyzeHeadless", "pyghidraRun") and GHIDRA_FOUND:
         return True
     # Also probe a couple of common Windows aliases.
     if shutil.which(name) or (name == "ghidra" and shutil.which("ghidraRun")):
@@ -195,7 +208,11 @@ def main(argv=None) -> int:
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     ap.add_argument("--have", action="store_true", help="print only installed tool names")
     ap.add_argument("--verbose", action="store_true", help="every task in detail, with install hints")
+    ap.add_argument("--ghidra-dir", help="Ghidra install folder, if not in a standard location")
     args = ap.parse_args(argv)
+
+    global GHIDRA_FOUND
+    GHIDRA_FOUND = ghidra_dir(args.ghidra_dir)
 
     status = {name: present(name) for name in TOOLS}
 

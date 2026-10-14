@@ -199,10 +199,10 @@ def test_triage():
 
 
 # ---------------------------------------------------------------------------
-# 3. check_tools.py runs, emits JSON, and finds Ghidra via GHIDRA_INSTALL_DIR.
+# 3. check_tools.py runs, emits JSON, and finds Ghidra via --ghidra-dir.
 # ---------------------------------------------------------------------------
 def test_check_tools():
-    print("\n[check_tools] runs, JSON, Ghidra env detection")
+    print("\n[check_tools] runs, JSON, Ghidra detection")
     ct = os.path.join(SCRIPTS, "check_tools.py")
     rc, out = run([ct, "--json"])
     check("check_tools rc=0", rc == 0, out[:200])
@@ -210,11 +210,8 @@ def test_check_tools():
     check("check_tools has by_task", "by_task" in data and "triage" in data["by_task"])
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, "support"))
-        # Pass only what the child needs (not the whole environment) plus the variable under test.
-        env = {k: os.environ[k] for k in ("PATH", "PATHEXT", "SYSTEMROOT") if k in os.environ}
-        env["GHIDRA_INSTALL_DIR"] = d
-        p = subprocess.run([PY, ct, "--json"], capture_output=True, text=True, env=env)
-        check("Ghidra found via GHIDRA_INSTALL_DIR", "ghidra" in json.loads(p.stdout)["have"])
+        rc, out = run([ct, "--json", "--ghidra-dir", d])
+        check("Ghidra found via --ghidra-dir", "ghidra" in json.loads(out)["have"])
 
 
 # ---------------------------------------------------------------------------

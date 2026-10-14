@@ -222,7 +222,7 @@ Transparency for anyone reviewing it before install:
 
 - **No network access, no telemetry.** None of the bundled scripts open a network connection or send data anywhere.
 - **Never executes the file being analyzed.** `triage.py`, `app_inspect.py` and `extract_endpoints.py` only read bytes; the Ghidra scripts run inside your own Ghidra.
-- **`check_tools.py`** looks up tool names on your `PATH`, checks whether a few Python libraries are importable, and runs `java -version`.
+- **`check_tools.py`** looks up tool names on your `PATH` and in common install folders (or a `--ghidra-dir` you pass), checks whether a few Python libraries are importable, and runs `java -version`.
 - **Everything else is guidance.** The playbooks tell the agent which tools to run (for example Ghidra, jadx, or Frida) when you have them installed; your agent's permission settings decide whether it asks before running them.
 
 ## FAQ

@@ -20,7 +20,7 @@ compatibility: >-
   Works with Claude Code, Claude.ai, Codex, Cursor, Gemini CLI, GitHub Copilot, and
   other Agent Skills clients.
 metadata:
-  version: "2.2.0"
+  version: "2.2.1"
   category: security
 ---
 
@@ -64,6 +64,7 @@ documenting how a check works in a research write-up, defensive detection).
    ```
    It prints one compact line per task. Once you know the target type, run
    `--task android` (etc.) to get install commands for what's missing there.
+   If Ghidra is installed somewhere unusual, add `--ghidra-dir <path>`.
 
 2. **Triage the artifact.** Extensions lie; let the bytes talk. This one pass
    gives file type (magic bytes), header facts (arch, .NET or not), framework/
