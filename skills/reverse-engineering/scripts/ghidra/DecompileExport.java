@@ -60,7 +60,7 @@ public class DecompileExport extends GhidraScript {
         {"crypto", "crypt.*|bcrypt.*|ncrypt.*|evp_.*|aes_.*|sha\\d*_.*|md5_.*|rsa_.*|ssl_.*"},
         {"process", "createprocess.*|shellexecute.*|winexec|system|execv.*|execl.*|fork|posix_spawn.*|popen"},
         {"files", "createfile.*|readfile|writefile|deletefile.*|movefile.*|copyfile.*|fopen.*|unlink|findfirstfile.*"},
-        {"registry", "reg(open|create|set|query|delete|enum).*"},
+        {"registry", "regsetvalue.*|regsetkey.*|reg(open|create|query|delete|enum).*"},
         {"dynamic loading", "loadlibrary.*|getprocaddress|dlopen|dlsym|ldrloaddll"},
         {"memory / injection", "virtualalloc.*|virtualprotect.*|writeprocessmemory|createremotethread.*|mprotect|mmap"},
     };
@@ -68,7 +68,7 @@ public class DecompileExport extends GhidraScript {
     // Compiler/runtime plumbing that tops every "most called" list but says nothing about the app.
     private static final Pattern RUNTIME_HELPER = Pattern.compile(
         "_guard_.*|__security_.*|_?_?chkstk|__?RTC_.*|__GSHandlerCheck.*|__C_specific_handler|"
-            + "_?mem(set|cpy|move|cmp)|_?str(len|cmp|cpy|ncmp)|__stack_chk_fail|_?_?cxa_.*|operator.*",
+            + "_?memset|_?memcpy|_?memmove|_?memcmp|_?str(len|cmp|cpy|ncmp)|__stack_chk_fail|_?_?cxa_.*|operator.*",
         Pattern.CASE_INSENSITIVE);
 
     /** A map before the code: most-called functions, and who calls notable API families. */

@@ -19,7 +19,7 @@
 - **Goal — the question I'm answering:** 
 
 ## 3. Environment and tools
-- **Analysis environment:** (host / VM snapshot id / container / device)
+- **Analysis environment:** (your machine / VM snapshot id / container / device)
 - **Tools + versions:** 
 - **Key commands run:** (enough to reproduce)
 

@@ -35,7 +35,7 @@ API_GROUPS = [
     ("crypto", r"crypt.*|bcrypt.*|ncrypt.*|evp_.*|aes_.*|sha\d*_.*|md5_.*|rsa_.*|ssl_.*"),
     ("process", r"createprocess.*|shellexecute.*|winexec|system|execv.*|execl.*|fork|posix_spawn.*|popen"),
     ("files", r"createfile.*|readfile|writefile|deletefile.*|movefile.*|copyfile.*|fopen.*|unlink|findfirstfile.*"),
-    ("registry", r"reg(open|create|set|query|delete|enum).*"),
+    ("registry", r"regsetvalue.*|regsetkey.*|reg(open|create|query|delete|enum).*"),
     ("dynamic loading", r"loadlibrary.*|getprocaddress|dlopen|dlsym|ldrloaddll"),
     ("memory / injection", r"virtualalloc.*|virtualprotect.*|writeprocessmemory|createremotethread.*|mprotect|mmap"),
 ]
@@ -43,7 +43,7 @@ API_GROUPS = [
 
 # Compiler/runtime plumbing that tops every "most called" list but says nothing about the app.
 RUNTIME_HELPER = re.compile(r"(?:_guard_.*|__security_.*|_?_?chkstk|__?RTC_.*|__GSHandlerCheck.*|"
-                            r"__C_specific_handler|_?mem(set|cpy|move|cmp)|_?str(len|cmp|cpy|ncmp)|"
+                            r"__C_specific_handler|_?memset|_?memcpy|_?memmove|_?memcmp|_?str(len|cmp|cpy|ncmp)|"
                             r"__stack_chk_fail|_?_?cxa_.*|operator.*)$", re.I)
 
 
@@ -147,7 +147,7 @@ def main():
         ext_iter = fm.getExternalFunctions()
         while ext_iter.hasNext():
             ext_names.append(ext_iter.next().getName())
-        for n in sorted(set(ext_names))[:400]:
+        for n in sorted(dict.fromkeys(ext_names))[:400]:   # dedupe
             fh.write("  %s\n" % n)
         fh.write("\n")
 
