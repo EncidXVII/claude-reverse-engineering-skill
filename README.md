@@ -33,6 +33,7 @@ Built for authorized work: security research, CTFs, malware analysis, interopera
 - [Bundled tools](#bundled-tools)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
+- [What the skill runs](#what-the-skill-runs)
 - [FAQ](#faq)
 - [Responsible use](#responsible-use)
 - [Contributing](#contributing)
@@ -214,6 +215,15 @@ python -I skills/reverse-engineering/scripts/extract_endpoints.py path/to/decomp
 
 - **Required:** Python 3.8+ and an agent with shell access.
 - **Optional, detected at runtime:** Ghidra 12+ with JDK 21, rizin or radare2, jadx, apktool, ILSpy (`ilspycmd`), Frida, mitmproxy, binwalk, Node.js. Install only what your target needs — `check_tools.py` prints the exact command for anything missing.
+
+## What the skill runs
+
+Transparency for anyone reviewing it before install:
+
+- **No network access, no telemetry.** None of the bundled scripts open a network connection or send data anywhere.
+- **Never executes the file being analyzed.** `triage.py`, `app_inspect.py` and `extract_endpoints.py` only read bytes; the Ghidra scripts run inside your own Ghidra.
+- **`check_tools.py`** looks up tool names on your `PATH`, checks whether a few Python libraries are importable, and runs `java -version`.
+- **Everything else is guidance.** The playbooks tell the agent which tools to run (for example Ghidra, jadx, or Frida) when you have them installed; your agent's permission settings decide whether it asks before running them.
 
 ## FAQ
 
