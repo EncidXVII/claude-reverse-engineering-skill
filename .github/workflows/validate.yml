@@ -83,8 +83,8 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      # Fetched by an action rather than curl in the shell, so the repository holds no
-      # download-and-run command; the checksum below still pins the exact release.
+      # Fetched by a release-download action, so the repository holds no shell
+      # download command; the checksum below still pins the exact release.
       - name: Download Ghidra release
         uses: robinraju/release-downloader@v1
         with:
