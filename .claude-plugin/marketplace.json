@@ -22,33 +22,7 @@
         "mobile",
         "firmware",
         "security-research"
-      ],
-      "relevance": {
-        "topic": "reverse engineering",
-        "signals": {
-          "cli": [
-            "analyzeHeadless",
-            "jadx",
-            "apktool",
-            "frida",
-            "rizin",
-            "r2",
-            "binwalk",
-            "objdump",
-            "readelf",
-            "ilspycmd"
-          ],
-          "filesRead": [
-            "**/*.smali",
-            "**/*.apk",
-            "**/*.ipa",
-            "**/*.dex",
-            "**/*.asar",
-            "**/*.wasm",
-            "**/*.pck"
-          ]
-        }
-      }
+      ]
     }
   ]
 }

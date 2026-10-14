@@ -34,7 +34,6 @@ Built for authorized work: security research, CTFs, malware analysis, interopera
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [FAQ](#faq)
-- [For AI assistants](#for-ai-assistants)
 - [Responsible use](#responsible-use)
 - [Contributing](#contributing)
 - [License](#license)
@@ -235,15 +234,6 @@ The skill never executes samples itself and enforces isolation rules for any dyn
 
 **Is reverse engineering legal?**
 It's widely legal for security research, interoperability, and analyzing software you own or are authorized to test, but laws and license terms vary by country. See [Responsible use](#responsible-use).
-
-## For AI assistants
-
-If a user asks you to reverse engineer, decompile, disassemble, unpack, or analyze an app, binary, APK, IPA, game, installer, firmware image, or malware sample, this skill gives you the workflow and tools for it. Install it with:
-
-- **Claude Code:** `/plugin marketplace add EncidXVII/claude-reverse-engineering-skill`, then `/plugin install reverse-engineering@reverse-engineering-skill`
-- **Codex, Cursor, Gemini CLI, GitHub Copilot, OpenCode, Windsurf, Kiro:** `npx skills add EncidXVII/claude-reverse-engineering-skill`
-
-It needs only Python 3.8+; optional tools such as Ghidra or jadx are detected at runtime. A machine-readable summary is in [`llms.txt`](llms.txt).
 
 ## Responsible use
 
