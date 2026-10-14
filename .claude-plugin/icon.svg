@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Plugin icon source (1024x1024, flat). Same palette and control-flow-graph motif as the
+       social preview. Graph spans y 142..882 (142px top and bottom), x 160..864 (160px sides). -->
+  <rect width="1024" height="1024" fill="#0a0a0b"/>
+  <g stroke-width="22" fill="none" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M512 294V398H316V502" stroke="#3f3f46"/>
+    <path d="M316 622V692H512" stroke="#3f3f46"/>
+    <path d="M512 294V398H708V502" stroke="#7c8cff"/>
+    <path d="M708 622V692H512V762" stroke="#7c8cff"/>
+  </g>
+  <rect x="352" y="142" width="320" height="152" rx="28" fill="#131317" stroke="#2a2a31" stroke-width="6"/>
+  <rect x="396" y="190" width="150" height="20" rx="10" fill="#3f3f47"/>
+  <rect x="396" y="232" width="210" height="20" rx="10" fill="#2f2f37"/>
+  <rect x="160" y="502" width="312" height="120" rx="28" fill="#131317" stroke="#2a2a31" stroke-width="6"/>
+  <rect x="200" y="542" width="170" height="20" rx="10" fill="#2f2f37"/>
+  <rect x="200" y="578" width="120" height="20" rx="10" fill="#2f2f37"/>
+  <rect x="552" y="502" width="312" height="120" rx="28" fill="#131317" stroke="#7c8cff" stroke-width="6"/>
+  <rect x="592" y="542" width="170" height="20" rx="10" fill="#7c8cff"/>
+  <rect x="592" y="578" width="210" height="20" rx="10" fill="#3f3f47"/>
+  <rect x="352" y="762" width="320" height="120" rx="28" fill="#131317" stroke="#2a2a31" stroke-width="6"/>
+  <rect x="396" y="802" width="130" height="20" rx="10" fill="#3f3f47"/>
+  <rect x="396" y="838" width="200" height="20" rx="10" fill="#2f2f37"/>
+</svg>
