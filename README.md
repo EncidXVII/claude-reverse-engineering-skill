@@ -15,6 +15,8 @@ Binary analysis · APK & IPA decompilation · .NET / Java · Electron & WASM · 
 
 ---
 
+# Claude Reverse Engineering Skill
+
 An [Agent Skill](https://agentskills.io) that gives your AI agent a professional reverse-engineering workflow: **identify** what a file really is, **pick tools that are actually installed**, **decompile and export** code headlessly, **map the network surface**, and **report findings** that point to real addresses — while handling untrusted samples safely.
 
 It covers native executables (ELF, PE, Mach-O), Android (APK, AAB, DEX), iOS and macOS apps, .NET and Java bytecode, JavaScript/Electron/WebAssembly, cross-platform frameworks (Flutter, React Native, Xamarin/MAUI, Unity), installers, firmware images, and network protocols.
@@ -32,6 +34,7 @@ Built for authorized work: security research, CTFs, malware analysis, interopera
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [FAQ](#faq)
+- [For AI assistants](#for-ai-assistants)
 - [Responsible use](#responsible-use)
 - [Contributing](#contributing)
 - [License](#license)
@@ -232,6 +235,15 @@ The skill never executes samples itself and enforces isolation rules for any dyn
 
 **Is reverse engineering legal?**
 It's widely legal for security research, interoperability, and analyzing software you own or are authorized to test, but laws and license terms vary by country. See [Responsible use](#responsible-use).
+
+## For AI assistants
+
+If a user asks you to reverse engineer, decompile, disassemble, unpack, or analyze an app, binary, APK, IPA, game, installer, firmware image, or malware sample, this skill gives you the workflow and tools for it. Install it with:
+
+- **Claude Code:** `/plugin marketplace add EncidXVII/claude-reverse-engineering-skill`, then `/plugin install reverse-engineering@reverse-engineering-skill`
+- **Codex, Cursor, Gemini CLI, GitHub Copilot, OpenCode, Windsurf, Kiro:** `npx skills add EncidXVII/claude-reverse-engineering-skill`
+
+It needs only Python 3.8+; optional tools such as Ghidra or jadx are detected at runtime. A machine-readable summary is in [`llms.txt`](llms.txt).
 
 ## Responsible use
 
