@@ -210,7 +210,9 @@ def test_check_tools():
     check("check_tools has by_task", "by_task" in data and "triage" in data["by_task"])
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, "support"))
-        env = dict(os.environ, GHIDRA_INSTALL_DIR=d)
+        # Pass only what the child needs (not the whole environment) plus the variable under test.
+        env = {k: os.environ[k] for k in ("PATH", "PATHEXT", "SYSTEMROOT") if k in os.environ}
+        env["GHIDRA_INSTALL_DIR"] = d
         p = subprocess.run([PY, ct, "--json"], capture_output=True, text=True, env=env)
         check("Ghidra found via GHIDRA_INSTALL_DIR", "ghidra" in json.loads(p.stdout)["have"])
 
