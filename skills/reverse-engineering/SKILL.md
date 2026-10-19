@@ -20,7 +20,7 @@ compatibility: >-
   Works with Claude Code, Claude.ai, Codex, Cursor, Gemini CLI, GitHub Copilot, and
   other Agent Skills clients.
 metadata:
-  version: "2.2.3"
+  version: "2.2.4"
   category: security
 ---
 

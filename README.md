@@ -88,7 +88,7 @@ Any agent that can read a `SKILL.md` and run shell commands can use the full wor
 
 ### Claude Code (recommended)
 
-Install as a plugin — updates arrive automatically. Inside Claude Code, run:
+Listed in Anthropic's official plugin directory for Claude Code, Cowork and the Claude apps: search for **Reverse Engineering** there. Or install it as a plugin straight from this repository — updates arrive automatically. Inside Claude Code, run:
 
 ```text
 /plugin marketplace add EncidXVII/claude-reverse-engineering-skill
@@ -112,7 +112,7 @@ cp -r claude-reverse-engineering-skill/skills/reverse-engineering .claude/skills
 
 ### Claude.ai and Claude Desktop
 
-Download the repository, zip the `skills/reverse-engineering` folder, and upload it under **Settings → Capabilities → Skills**.
+Add **Reverse Engineering** from Anthropic's plugin directory. Or download the repository, zip the `skills/reverse-engineering` folder, and upload it under **Settings → Capabilities → Skills**.
 
 ### Codex, Cursor, Gemini CLI, GitHub Copilot, OpenCode, Windsurf, Kiro
 
