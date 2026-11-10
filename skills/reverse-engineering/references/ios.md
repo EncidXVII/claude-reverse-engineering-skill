@@ -65,7 +65,7 @@ Once you have a decrypted (or never-encrypted) Mach-O:
 
 ## Entitlements, Info.plist, embedded data
 
-Fastest route: `python -I <skill-dir>/scripts/app_inspect.py app.ipa` (or a `.app` folder)
+Fastest route: `python3 -I <skill-dir>/scripts/app_inspect.py app.ipa` (or a `.app` folder)
 prints the Info.plist essentials, entitlements from the code signature, frameworks, and
 whether each architecture slice is App Store encrypted, on any OS.
 

@@ -31,13 +31,12 @@ for an agent working headless through a shell: identify the target, pick tools
 that are actually installed, export what you need to files, read it in slices,
 and back every claim with an address, offset, or captured request.
 
-**Paths.** `${CLAUDE_SKILL_DIR}` is the folder containing this SKILL.md (written
-`<skill-dir>` in the reference files). Claude Code replaces it with the real path
-automatically. On any other agent (Codex, Cursor, Gemini CLI, Copilot, OpenCode…)
-replace it yourself with the absolute path of the directory you loaded this file
-from — don't leave it as a shell variable, which would expand to nothing. Paths
-like `scripts/triage.py` and `references/android.md` are relative to that folder.
-Commands say `python`; use `python3` where that's the interpreter's name.
+**Paths.** `${CLAUDE_SKILL_DIR}` is the folder containing this SKILL.md
+(`<skill-dir>` in the reference files); Claude Code fills it in. On other agents
+(Codex, Cursor, Gemini CLI, Copilot, OpenCode…) replace it yourself with the
+absolute path of this file's directory — left as a shell variable it expands to
+nothing. Paths like `scripts/triage.py` and `references/android.md` are relative
+to that folder. Commands say `python3`; on Windows use `py -3`.
 
 ## Scope
 
@@ -48,6 +47,14 @@ authorized test, a malware sample being analyzed for defense, a file format you
 need to interoperate with, or a crash you're diagnosing. Don't interrogate the
 user; a plausible legitimate context is enough, and one check-in per task is
 plenty.
+
+Offline understanding of a client, protocol, or service is fine; acting against a
+live system the user doesn't own (forged or replayed requests, auth bypass,
+fuzzing, bulk scraping) needs ownership or explicit authorization such as
+bug-bounty scope or an engagement, so prefer a local mock or the user's own
+account. With no user to ask, do the static work, state the assumption in your
+answer (the template's *Authorization basis* if you use it), and leave live
+actions to a human.
 
 Decline the specific part of a request whose goal is plainly illegitimate:
 pirating paid software or stripping license/DRM checks to avoid paying, cheats
@@ -60,83 +67,75 @@ documenting how a check works in a research write-up, defensive detection).
 1. **Know your toolbox.** Run once per session so you plan around what's actually
    installed and get install hints for what's missing:
    ```bash
-   python "${CLAUDE_SKILL_DIR}/scripts/check_tools.py"
+   python3 -I "${CLAUDE_SKILL_DIR}/scripts/check_tools.py"
    ```
    It prints one compact line per task. Once you know the target type, run
    `--task android` (etc.) to get install commands for what's missing there.
    If Ghidra is installed somewhere unusual, add `--ghidra-dir <path>`.
 
-2. **Triage the artifact.** Extensions lie; let the bytes talk. This one pass
-   gives file type (magic bytes), header facts (arch, .NET or not), framework/
-   packer/installer fingerprints, hashes, entropy, interesting strings, container
-   contents, and "suggested next steps". It also takes a directory — an install
-   folder, an extracted archive, or a macOS `.app` bundle:
+2. **Triage the artifact.** Extensions lie; let the bytes talk. One pass gives
+   file type (magic bytes), header facts (arch, .NET or not), framework/packer/
+   installer fingerprints, hashes, entropy, strings, container contents, and
+   suggested next steps. It also takes a directory (install folder, extracted
+   archive, macOS `.app` bundle):
    ```bash
-   python -I "${CLAUDE_SKILL_DIR}/scripts/triage.py" <file-or-dir>
+   python3 -I "${CLAUDE_SKILL_DIR}/scripts/triage.py" <file-or-dir>
    ```
-   For an app or game, also pull the platform's own metadata in one call — Android
-   manifest (permissions, exported components, deep links), Apple Info.plist,
-   entitlements and App Store encryption, Windows version info and signer, game
-   engine/backend and where the code lives:
+   For an app or game, also pull platform metadata in one call: Android manifest,
+   Apple Info.plist and entitlements, Windows version info and signer, game engine
+   and where the code lives:
    ```bash
-   python -I "${CLAUDE_SKILL_DIR}/scripts/app_inspect.py" <apk|ipa|.app|exe|game-dir>
+   python3 -I "${CLAUDE_SKILL_DIR}/scripts/app_inspect.py" <apk|ipa|.app|exe|game-dir>
    ```
 
-3. **Set up a safe workspace.** Put the target in its own fresh, empty directory;
-   keep your notes and scripts elsewhere. Never execute, open, or build anything
-   from inside a sample's directory. Treat anything you didn't build as live —
-   read [references/dynamic-analysis.md](references/dynamic-analysis.md) before
-   any step that runs it.
+3. **Set up a safe workspace.** Put the target in its own fresh, empty directory
+   and keep notes and scripts elsewhere; never execute, open, or build anything
+   from inside it. Treat anything you didn't build as live — read
+   [references/dynamic-analysis.md](references/dynamic-analysis.md) before any
+   step that runs it.
 
-4. **Prefer an RE MCP server if one is connected.** If the session exposes tools
-   for Ghidra, IDA, radare2, or jadx, drive the disassembler through them
-   (decompile a function, rename, follow xrefs) instead of shelling out — it's
-   the closest thing to working in the GUI. See
+4. **Prefer an RE MCP server if one is connected.** If the session exposes
+   Ghidra, IDA, radare2, or jadx tools, drive the disassembler through them
+   (decompile, rename, follow xrefs) instead of shelling out; see
    [references/mcp-servers.md](references/mcp-servers.md). Otherwise use the CLI
-   tools and the export script in step 6.
+   tools and the export in step 6.
 
 5. **Route to the target type** and read that playbook (table below).
 
 6. **Static first, dynamic to confirm.** Read code/data without running it; reach
    for a debugger/tracer/hook when values are computed at runtime or code is
    packed/obfuscated. To read a native target without a GUI, batch-export its
-   decompiled C and then read it in slices:
+   decompiled C (set `GHIDRA_INSTALL_DIR` to the Ghidra path check_tools reports,
+   or your install dir; on Windows, `analyzeHeadless.bat` and a folder you make):
    ```bash
-   mkdir -p /tmp/ghproj
-   "$GHIDRA_INSTALL_DIR/support/analyzeHeadless" /tmp/ghproj re -import <target> \
-     -scriptPath "${CLAUDE_SKILL_DIR}/scripts/ghidra" \
-     -postScript DecompileExport.java /tmp/decomp.txt -deleteProject
+   P=$(mktemp -d "${TMPDIR:-/tmp}/ghproj.XXXXXX")
+   "$GHIDRA_INSTALL_DIR/support/analyzeHeadless" "$P" re -import <target> \
+     -scriptPath "${CLAUDE_SKILL_DIR}/scripts/ghidra" -log "$P/headless.log" \
+     -postScript DecompileExport.java "$P/decomp.txt" -deleteProject
    ```
-   (`analyzeHeadless.bat` on Windows; needs JDK 21. The project dir must exist;
-   `-deleteProject` lets you re-run cleanly. Optional script args after the output
-   path: a case-insensitive function-name filter, then a max function count.)
    **`analyzeHeadless` exits 0 even when the script fails** — confirm the output
-   file exists and ends with `/* exported N functions */`. Use the `.java` script:
-   Ghidra 12+ only runs `.py` scripts when launched through PyGhidra
-   (`decompile_export.py` is the variant for that). Before the decompiled
-   code, the export gives a map: entry points, imports, strings, the most-called
-   functions (name those first), and which functions call network, crypto, file,
-   process, registry, and dynamic-loading APIs (start reading there). Read that, then `grep -n` the export for names/strings and read
-   matching functions with `sed -n 'START,ENDp'` — don't load the whole file into
-   context. Crypto constants found by `triage.py` come with addresses to jump to.
+   ends with `/* exported N functions */`, else read `$P/headless.log`.
 
-   Large targets (game executables, Electron/Chromium apps, anything over ~50 MB)
-   can take a very long time to analyze. Analyze the one DLL or module that
-   matters instead of the whole app, cap analysis with `-analysisTimeoutPerFile
-   900` (seconds) and `-max-cpu <n>`, pass the export's name filter and function
-   cap, and run it in the background so you aren't blocked waiting.
+   Read the export's map first, then `grep -n` it and read matching functions
+   with `sed -n 'START,ENDp'` — don't load the whole file. Crypto constants from
+   `triage.py` come with addresses to jump to. `-analysisTimeoutPerFile` caps
+   analysis only, not the export. Re-exporting without re-analysis, large
+   targets, script args, JDK/PyGhidra:
+   [references/native-binaries.md](references/native-binaries.md#ghidra-workflow).
 
    For a decompiled/extracted tree (jadx output, a JS bundle, a firmware rootfs),
    map the endpoints, hosts, and crypto surface fast:
    ```bash
-   python -I "${CLAUDE_SKILL_DIR}/scripts/extract_endpoints.py" <dir>
+   python3 -I "${CLAUDE_SKILL_DIR}/scripts/extract_endpoints.py" <dir>
    ```
 
-7. **Rename as you learn, and record findings.** Name functions/variables the
-   moment you understand them — a named map compounds. Capture results in
-   [assets/findings-template.md](assets/findings-template.md); every claim should
-   carry a coordinate (address, offset, symbol, or request #) so anyone can
-   re-derive it.
+7. **Rename as you learn, then answer.** Name functions/variables the moment you
+   understand them — a named map compounds. Lead with the direct answer and the
+   coordinates (address, offset, symbol, request #) behind it; use
+   [assets/findings-template.md](assets/findings-template.md) only for malware/IR,
+   multi-session work, or when asked. If a protection layer or missing tool costs
+   far more than the question is worth, stop and report what's known, what's
+   blocked, and the cheapest next step.
 
 ## Routing: pick the target type
 
@@ -181,9 +180,13 @@ locating code, defeating obfuscation, compiler fingerprinting) read
 
 - One sample per fresh, empty directory; analysis scripts and notes live
   elsewhere. Pass the sample path as an argument — don't `cd` into its directory.
-- Never double-click or execute a sample on your host. Dynamic analysis runs in a
-  disposable VM/container with no credentials and controlled networking.
-- Run Python that parses a sample with `python -I`, so a planted `json.py`/`os.py`
+- Never double-click or execute a sample on your host. Malware runs only in a
+  disposable full VM with no credentials and controlled networking; containers
+  share the host kernel, so keep them for CTF binaries or the user's own builds.
+  Before executing anything that may be malware (running it, `strace`,
+  `frida -f`, qemu-user, detonation), confirm the shell is inside that VM; if you
+  can't, stay static.
+- Run Python that parses a sample with `python3 -I`, so a planted `json.py`/`os.py`
   beside it can't hijack an `import`.
 - Don't let a build tool, interpreter, or loader touch the sample's directory.
 
@@ -205,6 +208,9 @@ Full isolation, network containment, and anti-analysis handling:
 - **Cite only what a tool showed you.** Every address, offset, function name, or
   endpoint in your answer must come from tool output in this session. If you
   haven't seen it, say it's unconfirmed — don't fill gaps with plausible guesses.
+- **Never do number math in your head.** Base conversion, endianness, VA/file
+  offset translation, XOR and checksums: compute them with `python3 -c` or
+  `rz-ax`, and cite the command.
 - **State how each conclusion is known, and what isn't verified.** Tag it:
   *read in decompiler*, *confirmed in assembly*, *observed at runtime*, or
   *inferred*. Name the gap ("this branch never executed", "decompiler output not

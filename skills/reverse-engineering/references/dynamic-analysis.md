@@ -20,9 +20,15 @@ If you did not build the target yourself, treat running it as potentially
 destructive. A single wrong double-click can encrypt your drive or exfiltrate your
 credentials.
 
-- **Disposable VM or container.** Run samples in a throwaway VM (with a clean
-  snapshot you revert after each run) or an isolated container. Never on your host
-  OS, never on a machine with data or credentials you care about.
+- **Malware gets a full VM, not a container.** Run samples in a throwaway VM with
+  a clean snapshot you revert after each run: REMnux (Linux distro/OVA) or
+  FLARE-VM (install script for a Windows VM you provide). Containers share the host kernel, so use them
+  only for CTF binaries or your own builds. Never on your host OS, never on a
+  machine with data or credentials you care about.
+- **Close the VM's side doors.** No shared folders, shared clipboard, or
+  drag-and-drop, and no USB passthrough. Use host-only or internal networking,
+  with FakeNet-NG inside the guest or an INetSim/REMnux gateway VM; never bridged
+  or NAT.
 - **No credentials, no sync.** The analysis environment has no logged-in accounts,
   no password manager, no mounted cloud drives, no SSH keys, no access to your
   file shares.
@@ -34,7 +40,7 @@ credentials.
 - **One sample per fresh, empty directory.** Your analysis scripts and notes live
   in a *different* directory. Pass the sample path as an argument; don't `cd` into
   its directory to run tools.
-- **Guard interpreter imports.** Run Python that touches a sample with `python -I`
+- **Guard interpreter imports.** Run Python that touches a sample with `python3 -I`
   so a planted `json.py`/`os.py`/`sitecustomize.py` beside the sample can't hijack
   an `import`. The same risk applies to any tool that loads plugins/config from the
   current directory.

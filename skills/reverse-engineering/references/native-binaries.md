@@ -57,7 +57,33 @@ Default to **Ghidra for understanding** and **rizin for scripting/automation**.
 ## Ghidra workflow
 
 **Agents:** use the headless export in SKILL.md step 6 (`DecompileExport.java`),
-then grep the output and read slices. The GUI steps below are for a human.
+then grep the output and read slices. Details for that recipe:
+
+- **Requirements.** Ghidra 12 needs JDK 21. Use the `.java` script: Ghidra 12+
+  runs `.py` scripts only when launched through PyGhidra, and
+  `decompile_export.py` is the variant for that.
+- **Script args** after the output path: a case-insensitive function-name filter,
+  then a max function count.
+- **What the export holds.** Before the decompiled code, a map: entry points,
+  imports, strings, the most-called functions (name those first), and which
+  functions call network, crypto, file, process, registry, and dynamic-loading
+  APIs (start reading there).
+- **Large targets** (game executables, Electron/Chromium apps, anything over
+  ~50 MB) can take a very long time. Analyze the one DLL or module that matters
+  instead of the whole app, cap analysis with `-analysisTimeoutPerFile 900`
+  (seconds) and `-max-cpu <n>`, pass the name filter and function cap, and run it
+  in the background. The timeout stops auto-analysis only; the export script then
+  runs with no overall limit, so an outer `timeout` is the backstop (GNU
+  coreutils; `gtimeout` on macOS via Homebrew). A killed run leaves no footer,
+  so treat its output as partial.
+- **Re-export without re-analyzing** (new filter or output): leave
+  `-deleteProject` off every run while you still want the project, and swap
+  `-import <target>` for `-process <target-filename> -noanalysis`; `rm -rf "$P"`
+  when done. `-import` into an existing project needs `-overwrite`.
+- **Parallel runs.** One project per `mktemp -d` folder; two runs sharing a
+  project collide on its lock and output file.
+
+The GUI steps below are for a human.
 
 1. New project → Import File → let it auto-detect format/arch → analyze with
    defaults (plus "Decompiler Parameter ID" for better signatures).

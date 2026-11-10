@@ -15,7 +15,7 @@
 
 ## 2. Scope and authorization
 - **Context:** (CTF / security research / malware analysis / interop / debugging / education)
-- **Authorization basis:** (own software / challenge / bug-bounty scope / lab sample / …)
+- **Authorization basis:** (own software / challenge / bug-bounty scope / lab sample / assumed, no user to ask: static only / …)
 - **Goal — the question I'm answering:** 
 
 ## 3. Environment and tools
