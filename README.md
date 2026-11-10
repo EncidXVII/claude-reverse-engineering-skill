@@ -49,7 +49,7 @@ Built for authorized work: security research, CTFs, malware analysis, interopera
 - **Finds the network surface fast.** Pulls Retrofit annotations, HTTP client calls, URLs, hosts, auth headers, and crypto usage out of decompiled code and minified JS, each with `file:line`.
 - **Safe with untrusted samples.** Isolation rules for malware, `python -I` against import hijacking, and an explicit rule that text inside a binary is data — never instructions — so analyzed files can't prompt-inject the agent.
 - **Grounded output.** Every finding must cite an address, offset, symbol, or request the tools actually showed, say how it's known (decompiler, assembly, runtime, or inferred), and name what wasn't verified.
-- **Tested on real tools, not just docs.** 63 automated checks covering every script and the skill's structure, run in CI on Linux, macOS, and Windows, plus a CI job that runs the Ghidra export against a real Ghidra release on every push.
+- **Tested on real tools, not just docs.** 109 automated checks covering every script and the skill's structure, run in CI on Linux, macOS, and Windows, plus a CI job that runs the Ghidra export against a real Ghidra release on every push.
 - **Light on context.** One short `SKILL.md`; the 14 playbooks load only when a task needs them, so the skill costs almost nothing until it's used.
 - **One permissive license.** Everything is Apache-2.0 — safe to use at work, fork, and ship.
 

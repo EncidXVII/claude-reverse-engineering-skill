@@ -63,8 +63,9 @@ def java_version():
 def python_libs():
     return {name: importlib.util.find_spec(name) is not None for name, _pip, _use in PY_LIBS}
 
-# name -> (what it's for, install hint). Hints are deliberately short; versions
-# move, so when one looks wrong, check the tool's site rather than trusting this.
+# name -> (what it's for, install hint[, alternative executable names]). Hints are
+# deliberately short; versions move, so when one looks wrong, check the tool's site
+# rather than trusting this. The entry counts as present if any of the names is found.
 TOOLS = {
     # triage / basics
     "file":      ("triage: identify file type", "apt install file / preinstalled on macOS/Linux"),
@@ -134,7 +135,9 @@ TOOLS = {
     "unsquashfs": ("firmware: extract SquashFS", "apt install squashfs-tools"),
     "7z":        ("firmware/archives: many formats", "apt install p7zip-full"),
     # emulation / symbolic
-    "qemu-user-static": ("emulation: run foreign-arch binaries", "apt install qemu-user-static"),
+    "qemu-user": ("emulation: run foreign-arch binaries", "apt install qemu-user-static",
+                  tuple("qemu-%s%s" % (a, sfx) for a in ("aarch64", "arm", "mips", "mipsel")
+                        for sfx in ("-static", ""))),
     "qemu-system-arm": ("emulation: boot ARM firmware", "apt install qemu-system-arm"),
     # diffing
     "rz-diff":   ("diffing: binary diff (rizin)", "ships with rizin"),
@@ -162,43 +165,77 @@ TASKS = {
     "dynamic":   ["frida", "frida-trace", "objection", "strace", "ltrace", "dtruss"],
     "network":   ["mitmproxy", "mitmweb", "wireshark", "tshark", "grpcurl", "curl"],
     "firmware":  ["binwalk", "unblob", "unsquashfs", "7z"],
-    "emulation": ["qemu-user-static", "qemu-system-arm"],
+    "emulation": ["qemu-user", "qemu-system-arm"],
     "diffing":   ["rz-diff", "radiff2", "bindiff"],
     "malware":   ["capa", "floss", "yara", "diec", "olevba"],
 }
 
 
 GHIDRA_GLOBS = ("C:/ghidra*", "C:/Program Files/ghidra*", "C:/tools/ghidra*", "~/ghidra*",
-                "~/tools/ghidra*", "/opt/ghidra*", "/usr/share/ghidra*", "/Applications/ghidra*")
+                "~/tools/ghidra*", "/opt/ghidra*", "/usr/share/ghidra*", "/Applications/ghidra*",
+                # brew install --cask ghidra (Apple silicon, then Intel)
+                "/opt/homebrew/Caskroom/ghidra/*/ghidra_*", "/usr/local/Caskroom/ghidra/*/ghidra_*")
 
 
-def ghidra_dir(explicit=None):
-    """Ghidra isn't put on PATH by its installer: use --ghidra-dir, else common install folders.
+def _support_file(d, name):
+    """Path of support/<name> or support/<name>.bat inside a Ghidra folder, else None."""
+    for fn in (name, name + ".bat"):
+        p = os.path.join(d, "support", fn)
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _version_key(path):
+    """(1, 11, 10) for ".../ghidra_11.10_PUBLIC", so 11.10 sorts above 11.9; () if unversioned."""
+    m = re.search(r"(\d+(?:\.\d+)+)", os.path.basename(os.path.normpath(path)))
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
+
+
+def ghidra_dir(explicit=None, patterns=GHIDRA_GLOBS):
+    """Ghidra isn't put on PATH by its installer: use --ghidra-dir, then the folder of a
+    ghidraRun on PATH (symlinks resolved, e.g. Homebrew's), then common install folders,
+    newest version first. A folder only counts if support/analyzeHeadless[.bat] exists.
 
     Deliberately reads no environment variables; pass --ghidra-dir for a custom location.
     """
     candidates = [explicit] if explicit else []
-    for pattern in GHIDRA_GLOBS:
-        candidates += sorted(glob.glob(os.path.expanduser(pattern)), reverse=True)
+    on_path = shutil.which("ghidraRun")
+    if on_path:
+        candidates.append(os.path.dirname(os.path.realpath(on_path)))
+    found = []
+    for pattern in patterns:
+        found += glob.glob(os.path.expanduser(pattern))
+    candidates += sorted(found, key=lambda p: (_version_key(p), p), reverse=True)
     for d in candidates:
-        if d and os.path.isdir(os.path.join(d, "support")):
+        if d and _support_file(d, "analyzeHeadless"):
             return d
     return None
 
 
 GHIDRA_FOUND = None   # set from main() so present() can use the --ghidra-dir result
+JDK_OK = True         # set from main(); False when java -version gives no version
 
 
 def present(name: str) -> bool:
-    if name in ("ghidra", "analyzeHeadless", "pyghidraRun") and GHIDRA_FOUND:
+    if name in ("ghidra", "analyzeHeadless") and GHIDRA_FOUND:
         return True
-    # Also probe a couple of common Windows aliases.
-    if shutil.which(name) or (name == "ghidra" and shutil.which("ghidraRun")):
+    if name == "pyghidraRun" and GHIDRA_FOUND and _support_file(GHIDRA_FOUND, "pyghidraRun"):
         return True
-    if os.name == "nt":
-        for alt in (name + ".exe", name + ".bat", name + ".cmd"):
-            if shutil.which(alt):
-                return True
+    # macOS ships /usr/bin/java and /usr/bin/javap stubs that only say "no Java runtime".
+    if name in ("java", "javap") and sys.platform == "darwin" and not JDK_OK:
+        return False
+    names = (name,) + (tuple(TOOLS[name][2]) if name in TOOLS and len(TOOLS[name]) > 2 else ())
+    if name == "ghidra":
+        names += ("ghidraRun",)
+    for n in names:
+        if shutil.which(n):
+            return True
+        # Also probe a couple of common Windows aliases.
+        if os.name == "nt":
+            for alt in (n + ".exe", n + ".bat", n + ".cmd"):
+                if shutil.which(alt):
+                    return True
     return False
 
 
@@ -211,8 +248,10 @@ def main(argv=None) -> int:
     ap.add_argument("--ghidra-dir", help="Ghidra install folder, if not in a standard location")
     args = ap.parse_args(argv)
 
-    global GHIDRA_FOUND
+    global GHIDRA_FOUND, JDK_OK
     GHIDRA_FOUND = ghidra_dir(args.ghidra_dir)
+    jver = java_version()
+    JDK_OK = jver is not None
 
     status = {name: present(name) for name in TOOLS}
 
@@ -223,8 +262,8 @@ def main(argv=None) -> int:
 
     tasks = {args.task: TASKS[args.task]} if args.task else TASKS
 
-    jver = java_version()
     libs = python_libs()
+    jdk_note = "  (needs a JDK; none found)" if jver is None else ""
 
     if args.json:
         out = {
@@ -232,6 +271,7 @@ def main(argv=None) -> int:
             "missing": sorted(n for n, ok in status.items() if not ok),
             "by_task": {t: {n: status.get(n, False) for n in names} for t, names in tasks.items()},
             "java_major": jver,
+            "ghidra_dir": GHIDRA_FOUND,
             "python_libs": libs,
         }
         print(json.dumps(out, indent=2))
@@ -248,10 +288,13 @@ def main(argv=None) -> int:
             have = [n for n in names if status.get(n)]
             miss = [n for n in names if not status.get(n)]
             print("  {:<10} have: {:<34} missing: {}".format(
-                task, ", ".join(have) or "-", ", ".join(miss) or "-"))
+                task, ", ".join(have) or "-", ", ".join(miss) or "-")
+                + (jdk_note if task in ("java", "android") else ""))
         libs_have = [n for n, ok in libs.items() if ok]
-        print("  {:<10} {}".format("java", "JDK %d" % jver if jver else "not found")
+        print("  {:<10} {}".format("jdk", "JDK %d" % jver if jver else "not found")
               + ("  (Ghidra 12 needs 21+)" if jver and jver < 21 else ""))
+        if GHIDRA_FOUND:
+            print("  ghidra dir: " + GHIDRA_FOUND)
         print("  {:<10} have: {}".format("py-libs", ", ".join(libs_have) or "-"))
         print("Install commands for one target type: check_tools.py --task <name>  (all: --verbose)")
         return 0
@@ -259,16 +302,19 @@ def main(argv=None) -> int:
     for task, names in tasks.items():
         shown = [n for n in names if n in TOOLS]
         present_here = [n for n in shown if status.get(n)]
-        print("\n[{}]  {}/{} present".format(task, len(present_here), len(shown)))
+        print("\n[{}]  {}/{} present".format(task, len(present_here), len(shown))
+              + (jdk_note if task in ("java", "android") else ""))
+        if task == "native" and GHIDRA_FOUND:
+            print("  ghidra dir: " + GHIDRA_FOUND)
         for n in shown:
             mark = "OK  " if status.get(n) else "--  "
-            purpose, hint = TOOLS[n]
+            purpose, hint = TOOLS[n][:2]
             line = "  {}{:<16} {}".format(mark, n, purpose)
             if not status.get(n):
                 line += "\n        install: {}".format(hint)
             print(line)
     if args.verbose:
-        print("\n[java]  " + ("JDK %d" % jver if jver else "not found"))
+        print("\n[jdk]  " + ("JDK %d" % jver if jver else "not found"))
         if jver and jver < 21:
             print("        note: Ghidra 12 needs JDK 21+; jadx/apktool run on older JDKs")
         print("\n[python libraries]  %d/%d importable" % (sum(libs.values()), len(libs)))

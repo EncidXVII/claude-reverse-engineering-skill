@@ -32,6 +32,7 @@ import json
 import math
 import os
 import re
+import stat
 import struct
 import sys
 import zipfile
@@ -51,6 +52,7 @@ SIGNATURES = [
     (b"\xce\xfa\xed\xfe", "Mach-O 32-bit", "macho"),
     (b"\xcf\xfa\xed\xfe", "Mach-O 64-bit", "macho"),
     (b"\xca\xfe\xba\xbe", "Mach-O fat binary or Java class", "cafebabe"),
+    (b"\xca\xfe\xba\xbf", "Mach-O fat binary (64-bit offsets)", "cafebabe"),
     (b"dex\n", "Android DEX bytecode", "android"),
     (b"Cr24", "Chrome extension (CRX)", "zip"),
     (b"PK\x03\x04", "ZIP container", "zip"),
@@ -179,6 +181,14 @@ ELF_MACHINES = {2: "SPARC", 3: "x86", 8: "MIPS", 20: "PowerPC", 21: "PowerPC64",
 ELF_TYPES = {1: "relocatable object", 2: "executable", 3: "shared object / PIE executable", 4: "core dump"}
 MACHO_CPUS = {7: "x86", 0x01000007: "x86-64", 12: "ARM", 0x0100000c: "ARM64",
               0x0200000c: "ARM64_32", 18: "PowerPC", 0x01000012: "PowerPC64"}
+# lipo-style names for fat slices: cputype -> (base name, {cpusubtype & 0x00FFFFFF: name}).
+# The high byte of cpusubtype carries capability bits (e.g. arm64e pointer-auth ABI version).
+LIPO_ARCHS = {7: ("i386", {}), 0x01000007: ("x86_64", {3: "x86_64", 8: "x86_64h"}),
+              12: ("arm", {5: "armv4t", 6: "armv6", 7: "armv5", 9: "armv7", 11: "armv7s", 12: "armv7k",
+                           14: "armv6m", 15: "armv7m", 16: "armv7em"}),
+              0x0100000c: ("arm64", {0: "arm64", 1: "arm64v8", 2: "arm64e"}),
+              0x0200000c: ("arm64_32", {0: "arm64_32", 1: "arm64_32"}),
+              18: ("ppc", {}), 0x01000012: ("ppc64", {})}
 MACHO_FILETYPES = {1: "object", 2: "executable", 6: "dylib", 8: "bundle", 9: "dylib stub", 0xb: "kext bundle"}
 
 # (regex, category, prefilter). The prefilter is a cheap literal a string must
@@ -288,6 +298,23 @@ def detect_magic(head: bytes):
 # ---------------------------------------------------------------------------
 # format parsers (all bounds-checked; malformed input yields notes, not crashes)
 # ---------------------------------------------------------------------------
+UPX_HINT = "decompress a copy with `upx -d -o unpacked.bin <file>`, then triage that"
+UPX_INFO = b"$Info: This file is packed with the UPX"
+NATIVE_ROUTES = ("native-pe", "native-elf", "macho", "macho-fat", "dotnet")
+
+
+def upx_marker_near_ends(path: str, data: bytes, size: int) -> bool:
+    """UPX! only in the first or last 4 KiB (where UPX puts its headers), never anywhere in the file."""
+    if b"UPX!" in data[:4096]:
+        return True
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, size - 4096))
+            return b"UPX!" in f.read(4096)
+    except OSError:
+        return False
+
+
 def parse_pe(data: bytes, r: TriageResult) -> None:
     try:
         e_lfanew = u32(data, 0x3C)
@@ -338,7 +365,7 @@ def parse_pe(data: bytes, r: TriageResult) -> None:
         r.file_label += "  ->  .NET managed assembly (CLR header present)"
     names = {s["name"] for s in r.sections}
     if {"UPX0", "UPX1"} & names or b"UPX!" in data[:4096]:
-        r.fingerprints.append({"name": "UPX-packed", "hint": "decompress a copy with `upx -d -o unpacked.bin <file>`, then triage that"})
+        r.fingerprints.append({"name": "UPX-packed", "hint": UPX_HINT})
     packed = [s["name"] for s in r.sections if s.get("entropy", 0) >= 7.2 and s["raw_size"] > 4096]
     if packed:
         r.notes.append("high-entropy section(s) %s — packed/encrypted code or embedded compressed data" % ", ".join(packed))
@@ -379,20 +406,35 @@ def parse_macho(data: bytes, r: TriageResult) -> None:
         r.fingerprints.append({"name": "Objective-C metadata", "hint": "class-dump / `ipsw class-dump` recovers class and method names"})
 
 
+def lipo_name(cpu: int, sub: int) -> str:
+    base, subs = LIPO_ARCHS.get(cpu, (None, {}))
+    if base is None:
+        return MACHO_CPUS.get(cpu, hex(cpu))
+    if not subs:
+        return base
+    name = subs.get(sub & 0x00FFFFFF)
+    return name or "%s (subtype %d)" % (base, sub & 0x00FFFFFF)   # lipo has no name for it
+
+
 def parse_cafebabe(data: bytes, r: TriageResult) -> None:
-    """CA FE BA BE is both Java class magic and Mach-O fat magic. Disambiguate."""
+    """CA FE BA BE is both Java class magic and Mach-O fat magic. Disambiguate.
+    CA FE BA BF is fat64 (64-bit offsets/sizes, 32-byte fat_arch_64 entries)."""
     if len(data) < 8:
+        r.file_label, r.route_key = "unknown (truncated CAFEBABE header)", "unknown"
+        r.notes.append("truncated header: CAFEBABE magic but fewer than 8 bytes, so neither a fat Mach-O nor a Java class")
         return
+    fat64 = data[3] == 0xbf
     word = u32(data, 4, ">")
-    if word < 45:  # nfat_arch is tiny; a Java class has major version >= 45 here
-        r.file_label, r.route_key = "Mach-O universal (fat) binary", "macho-fat"
+    if fat64 or word < 45:  # nfat_arch is tiny; a Java class has major version >= 45 here
+        r.file_label, r.route_key = "Mach-O universal (fat%s) binary" % ("64" if fat64 else ""), "macho-fat"
+        stride = 32 if fat64 else 20
         arches = []
         for i in range(min(word, 16)):
             try:
-                cpu = u32(data, 8 + i * 20, ">")
-                arches.append(MACHO_CPUS.get(cpu, hex(cpu)))
+                cpu, sub = struct.unpack_from(">II", data, 8 + i * stride)
             except struct.error:
                 break
+            arches.append(lipo_name(cpu, sub))
         r.format_details["slices"] = arches
     else:
         major = u16(data, 6, ">")
@@ -485,7 +527,7 @@ def rust_dependencies(data: bytes):
     return info
 
 
-ALL_MARKERS = sorted({m for _n, _r, _h, alts in FINGERPRINTS for alt in alts for m in alt} | {DOTNET_BUNDLE_SIG})
+ALL_MARKERS = sorted({m for _n, _r, _h, alts in FINGERPRINTS for alt in alts for m in alt} | {DOTNET_BUNDLE_SIG, UPX_INFO})
 _OVERLAP = max(len(m) for m in ALL_MARKERS) + 8
 
 
@@ -723,10 +765,27 @@ NOTABLE_ROUTES = {"native-pe", "native-elf", "macho", "macho-fat", "dotnet", "an
                   "java-class", "archive", "firmware", "compressed", "ole", "frameworks"}
 
 
+def _is_regular(path: str, follow: bool = False) -> bool:
+    """True only for a regular file. FIFOs, sockets and device nodes block or never end on read.
+    lstat by default, so a symlink is never regular; follow=True stats the link target."""
+    try:
+        st = os.stat(path) if follow else os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode)
+
+
+def _inside(path: str, root_real: str) -> bool:
+    real = os.path.realpath(path)
+    return real == root_real or real.startswith(root_real.rstrip(os.sep) + os.sep)
+
+
 def triage_directory(root: str, r: TriageResult, max_files: int) -> None:
     r.kind = "directory"
     counts, notable, apps, total, scanned = Counter(), [], {}, 0, 0
     truncated = False
+    skipped_special = skipped_out_of_tree = 0
+    root_real = os.path.realpath(root)
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "__pycache__")]
         for fn in filenames:
@@ -735,6 +794,12 @@ def triage_directory(root: str, r: TriageResult, max_files: int) -> None:
                 break
             path = os.path.join(dirpath, fn)
             if os.path.islink(path):
+                # in-tree links duplicate files already walked; out-of-tree ones would pull in host files
+                if not _inside(path, root_real):
+                    skipped_out_of_tree += 1
+                continue
+            if not _is_regular(path):
+                skipped_special += 1     # FIFO, socket or device node: open()/read() would block
                 continue
             try:
                 size = os.path.getsize(path)
@@ -770,6 +835,8 @@ def triage_directory(root: str, r: TriageResult, max_files: int) -> None:
         "by_route": dict(counts.most_common()),
         "app_markers": [{"name": k, "evidence": v} for k, v in apps.items()],
         "notable_files": [{"size": s, "path": p, "type": l} for s, p, l in heapq.nlargest(20, notable)],
+        "skipped_special": skipped_special,
+        "skipped_symlink_out_of_tree": skipped_out_of_tree,
     }
     steps = []
     for name in apps:
@@ -823,13 +890,20 @@ def triage_file(path: str, r: TriageResult, args) -> None:
     elif r.route_key == "zip":
         classify_zip(path, r)
 
+    native = r.route_key in NATIVE_ROUTES
     if r.route_key in ("native-pe", "native-elf", "macho", "macho-fat", "dotnet", "unknown"):
         run_fingerprints(scanner.found, r)
         names = {fp["name"] for fp in r.fingerprints}
+        if native and "UPX-packed" not in names and (
+                UPX_INFO in scanner.found or upx_marker_near_ends(path, data, r.size_bytes)):
+            r.fingerprints.append({"name": "UPX-packed", "hint": UPX_HINT})
         deps = (go_dependencies(path, data) if "Go binary" in names else None) or \
                (rust_dependencies(data) if "Rust binary" in names else None)
         if deps:
             r.dependencies = deps
+    if native and r.entropy >= 7.2 and not any("entropy" in s for s in r.sections):
+        r.notes.append("whole-file entropy %.2f with no section data — likely packed or encrypted; "
+                       "look for a packer stub before decompiling" % r.entropy)
     if r.route_key not in ("zip", "archive", "compressed", "resource", "asar"):
         find_crypto(data, r)
 
@@ -837,6 +911,14 @@ def triage_file(path: str, r: TriageResult, args) -> None:
         surface_strings(data, r, args.min_len, args.strings)
 
     r.next_steps = [ROUTES.get(r.route_key, ROUTES["unknown"])]
+    if r.route_key == "macho-fat":
+        present = [a for a in r.format_details.get("slices", []) if " " not in a and not a.startswith("0x")]
+        if present:
+            r.next_steps[0] = ("Fat Mach-O — thin one slice first (`lipo -thin %s <file> -output out`), "
+                               "then references/ios.md" % present[0])
+        else:
+            r.next_steps[0] = ("Fat Mach-O — list the slices with `lipo -archs <file>`, thin one with "
+                               "`lipo -thin <arch> <file> -output out`, then references/ios.md")
     for fp in r.fingerprints:
         r.next_steps.append("%s: %s" % (fp["name"], fp["hint"]))
     if r.crypto:
@@ -861,6 +943,10 @@ def main(argv=None) -> int:
 
     if not os.path.exists(args.path):
         print("error: no such file or directory: %s" % args.path, file=sys.stderr)
+        return 2
+
+    if not os.path.isdir(args.path) and not _is_regular(args.path, follow=True):
+        print("error: not a regular file or directory (FIFO, socket or device?): %s" % args.path, file=sys.stderr)
         return 2
 
     r = TriageResult(path=os.path.abspath(args.path))
@@ -936,6 +1022,9 @@ def print_report(r: TriageResult) -> None:
         d = r.directory
         print("-" * 72)
         print("BY TYPE     : " + ", ".join("%s=%d" % kv for kv in d["by_route"].items()))
+        if d.get("skipped_special") or d.get("skipped_symlink_out_of_tree"):
+            print("SKIPPED     : %d special (FIFO/socket/device), %d symlinks leaving the tree"
+                  % (d.get("skipped_special", 0), d.get("skipped_symlink_out_of_tree", 0)))
         if d["app_markers"]:
             print("APP MARKERS :")
             for m in d["app_markers"]:
