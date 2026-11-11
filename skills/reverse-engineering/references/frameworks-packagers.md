@@ -30,7 +30,7 @@ Note it, then move to the container.
 
 ## Game engines
 
-`python -I <skill-dir>/scripts/app_inspect.py <game-folder>` reports the engine, version,
+`python3 -I <skill-dir>/scripts/app_inspect.py <game-folder>` reports the engine, version,
 Unity scripting backend (Mono or IL2CPP, with the IL2CPP metadata version), Unreal pak
 format, or Godot version, plus where the game code lives.
 
@@ -53,7 +53,7 @@ format work, not needed for code.
 - **PyInstaller** — the exe (or `_internal/` folder) is a bootloader plus an
   archive of `.pyc` files. Extract with `pyinstxtractor-ng`, find the entry
   script, then decompile `.pyc` with a tool that supports that Python version
-  (`pycdc` for broad coverage; disassemble with `python -m dis` under the same
+  (`pycdc` for broad coverage; disassemble with `python3 -m dis` under the same
   Python version when decompilers fail on new bytecode).
 - **Nuitka** — Python compiled to C. There's no bytecode to decompile; analyze
   as native code. Module and constant names still leak in strings.

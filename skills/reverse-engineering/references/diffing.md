@@ -26,8 +26,8 @@ the parts that changed:
 
 ```bash
 # 1-2: what changed at the file and metadata level
-python -I <skill-dir>/scripts/triage.py old/ --json > old.json
-python -I <skill-dir>/scripts/triage.py new/ --json > new.json
+python3 -I <skill-dir>/scripts/triage.py old/ --json > old.json
+python3 -I <skill-dir>/scripts/triage.py new/ --json > new.json
 rz-diff -t imports old.bin new.bin                  # imports added/removed
 rz-diff -t strings old.bin new.bin                  # strings added/removed
 ```

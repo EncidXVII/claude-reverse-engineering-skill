@@ -34,7 +34,7 @@ tree; `jadx-gui` is the same engine for a human at the keyboard.
 
 ```bash
 jadx -d out/ --show-bad-code app.apk          # decompile everything to out/
-python -I <skill-dir>/scripts/extract_endpoints.py out/   # endpoints, hosts, crypto
+python3 -I <skill-dir>/scripts/extract_endpoints.py out/   # endpoints, hosts, crypto
 grep -rn "loginUrl\|/api/" out/sources | head -50          # jump to relevant code
 grep -rln "class .*LoginRepository" out/sources            # find a class by name
 ```
@@ -74,7 +74,7 @@ relevant when you're testing a patched build of *your own* app or a CTF target.
 
 ## Manifest and resources
 
-Fastest route: `python -I <skill-dir>/scripts/app_inspect.py app.apk` reads the binary
+Fastest route: `python3 -I <skill-dir>/scripts/app_inspect.py app.apk` reads the binary
 manifest directly (package, SDK levels, permissions, exported components, deep links,
 debuggable/backup/cleartext flags) without apktool.
 
