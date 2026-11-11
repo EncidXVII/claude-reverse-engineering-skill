@@ -12,11 +12,14 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import random
 import re
 import struct
 import subprocess
 import sys
 import tempfile
+import time
+import traceback
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,10 +41,27 @@ def check(name, cond, detail=""):
         print("  FAIL " + name + ((" — " + detail) if detail else ""))
 
 
-def run(args, **kw):
-    """Run a bundled script with -I (isolated) and return (rc, stdout+stderr)."""
-    p = subprocess.run([PY, "-I"] + args, capture_output=True, text=True, **kw)
+TIMEOUT_RC = 124
+
+
+def run(args, timeout=120, **kw):
+    """Run a bundled script with -I (isolated) and return (rc, stdout+stderr).
+
+    A hang becomes a failure result (rc TIMEOUT_RC) instead of stalling or crashing the suite."""
+    try:
+        p = subprocess.run([PY, "-I"] + args, capture_output=True, text=True, timeout=timeout, **kw)
+    except subprocess.TimeoutExpired:
+        return TIMEOUT_RC, "TIMEOUT after {}s".format(timeout)
     return p.returncode, p.stdout + p.stderr
+
+
+def jload(out):
+    """Parse script JSON output; on garbage, return a dict that fails checks instead of raising."""
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return {"_raw": out[:300]}
+    return data if isinstance(data, dict) else {"_raw": out[:300]}
 
 
 # ---------------------------------------------------------------------------
@@ -50,15 +70,16 @@ def run(args, **kw):
 # ---------------------------------------------------------------------------
 def test_compile():
     print("\n[compile] all bundled scripts byte-compile under this Python")
-    import py_compile
+    # compile() in memory, not py_compile, so no __pycache__ lands in the skill folder
     for dirpath, _dirs, files in os.walk(SCRIPTS):
         for fn in files:
             if fn.endswith(".py"):
                 path = os.path.join(dirpath, fn)
                 try:
-                    py_compile.compile(path, doraise=True)
+                    with open(path, "rb") as f:
+                        compile(f.read(), path, "exec")
                     check("compile " + os.path.relpath(path, SKILL), True)
-                except py_compile.PyCompileError as e:
+                except (SyntaxError, ValueError) as e:
                     check("compile " + os.path.relpath(path, SKILL), False, str(e))
 
 
@@ -86,10 +107,7 @@ def make_pe(clr=False, extra=b""):
 
 def tri(triage, path, *extra):
     rc, out = run([triage, path, "--json", "--no-strings"] + list(extra))
-    try:
-        return rc, json.loads(out)
-    except ValueError:
-        return rc, {"_raw": out[:300]}
+    return rc, jload(out)
 
 
 def fp_names(data):
@@ -111,7 +129,7 @@ def test_triage():
         check("ELF -> native-elf", rc == 0 and data.get("route_key") == "native-elf", data.get("route_key"))
         check("ELF arch parsed (AArch64)", data.get("format_details", {}).get("arch") == "AArch64")
         rc, out = run([triage, elf, "--json"])
-        check("emits sha256", len(json.loads(out).get("hashes", {}).get("sha256", "")) == 64)
+        check("emits sha256", len(jload(out).get("hashes", {}).get("sha256", "")) == 64)
 
         rc, data = tri(triage, write("native.exe", make_pe()))
         check("PE -> native-pe, x86-64", data.get("route_key") == "native-pe"
@@ -133,7 +151,7 @@ def test_triage():
         fat = (b"\xca\xfe\xba\xbe" + struct.pack(">I", 2) + struct.pack(">IIIII", 0x01000007, 3, 4096, 64, 12)
                + struct.pack(">IIIII", 0x0100000c, 0, 8192, 64, 14) + b"\x00" * 32)
         rc, data = tri(triage, write("uni", fat))
-        check("fat Mach-O slices", data.get("format_details", {}).get("slices") == ["x86-64", "ARM64"], str(data.get("format_details")))
+        check("fat Mach-O slices", data.get("format_details", {}).get("slices") == ["x86_64", "arm64"], str(data.get("format_details")))
         # APK + framework fingerprints
         apk = os.path.join(d, "app.apk")
         with zipfile.ZipFile(apk, "w") as z:
@@ -198,6 +216,114 @@ def test_triage():
             check("no crash on " + name, rc == 0)
 
 
+def test_triage_robustness():
+    print("\n[triage] special files, symlinks, fat64/arm64e, UPX on ELF")
+    triage = os.path.join(SCRIPTS, "triage.py")
+
+    def elf64(body=b""):
+        return b"\x7fELF\x02\x01\x01" + b"\x00" * 9 + struct.pack("<HH", 2, 62) + b"\x00" * 100 + body
+
+    with tempfile.TemporaryDirectory() as d:
+        def write(name, blob):
+            p = os.path.join(d, name)
+            with open(p, "wb") as f:
+                f.write(blob)
+            return p
+
+        # 1.1: FIFOs and out-of-tree symlinks
+        if hasattr(os, "mkfifo"):
+            fd_dir = os.path.join(d, "fifo_dir")
+            os.mkdir(fd_dir)
+            with open(os.path.join(fd_dir, "a.out"), "wb") as f:
+                f.write(elf64())
+            fifo = os.path.join(fd_dir, "pipe")
+            os.mkfifo(fifo)
+            rc, out = run([triage, fd_dir, "--json", "--no-strings"], timeout=30)
+            dd = jload(out).get("directory", {})
+            check("triage: FIFO in directory skipped, no hang",
+                  rc == 0 and dd.get("skipped_special") == 1 and dd.get("files_scanned") == 1, "rc=%s %s" % (rc, dd))
+            rc, out = run([triage, fifo, "--json"], timeout=30)
+            check("triage: FIFO as single path exits 2", rc == 2, "rc=%s %s" % (rc, out[-200:]))
+        else:
+            print("  skip FIFO tests (no os.mkfifo on this platform)")
+
+        if hasattr(os, "symlink"):
+            outside = write("host_secret.bin", elf64(b"HOST"))
+            ld = os.path.join(d, "link_dir")
+            os.mkdir(ld)
+            with open(os.path.join(ld, "inside.bin"), "wb") as f:
+                f.write(elf64())
+            try:
+                os.symlink(outside, os.path.join(ld, "escape"))
+                os.symlink(os.path.join(ld, "inside.bin"), os.path.join(ld, "internal"))
+                made = True
+            except (OSError, NotImplementedError):
+                made = False
+            if made:
+                rc, data = tri(triage, ld)
+                dd = data.get("directory", {})
+                paths = [n.get("path") for n in dd.get("notable_files", [])]
+                check("triage: out-of-tree symlink skipped and counted",
+                      rc == 0 and dd.get("skipped_symlink_out_of_tree") == 1 and "escape" not in paths
+                      and dd.get("files_scanned") == 1, "rc=%s %s" % (rc, dd))
+            else:
+                print("  skip symlink test (symlinks not permitted here)")
+
+        # 1.5: fat / fat64 / arm64e / lipo step
+        fat = (b"\xca\xfe\xba\xbe" + struct.pack(">I", 2)
+               + struct.pack(">IIIII", 0x01000007, 3, 4096, 64, 12)
+               + struct.pack(">IIIII", 0x0100000c, 0x80000002, 8192, 64, 14) + b"\x00" * 64)
+        rc, data = tri(triage, write("uni_arm64e", fat))
+        fd = data.get("format_details", {})
+        check("triage: arm64e slice (0x80000002) named arm64e", fd.get("slices") == ["x86_64", "arm64e"], str(fd))
+        step = (data.get("next_steps") or [""])[0]
+        check("triage: lipo step uses a present slice", "lipo -thin x86_64 " in step, step)
+
+        fat64 = (b"\xca\xfe\xba\xbf" + struct.pack(">I", 2)
+                 + struct.pack(">IIQQII", 0x0100000c, 0, 1 << 33, 64, 14, 0)
+                 + struct.pack(">IIQQII", 0x01000007, 8, 1 << 34, 64, 14, 0) + b"\x00" * 64)
+        rc, data = tri(triage, write("uni64", fat64))
+        fd = data.get("format_details", {})
+        check("triage: fat64 parsed (32-byte fat_arch_64)", rc == 0 and data.get("route_key") == "macho-fat"
+              and fd.get("slices") == ["arm64", "x86_64h"], str(data)[:300])
+
+        # an unnamed subtype is shown but never used for lipo -thin
+        odd = (b"\xca\xfe\xba\xbe" + struct.pack(">I", 2)
+               + struct.pack(">IIIII", 0x0100000c, 0x8000000c, 4096, 64, 14)
+               + struct.pack(">IIIII", 0x0100000c, 0x80000002, 8192, 64, 14) + b"\x00" * 64)
+        rc, data = tri(triage, write("uni_odd", odd))
+        step = (data.get("next_steps") or [""])[0]
+        check("triage: lipo step skips slices lipo cannot name", "lipo -thin arm64e " in step, step)
+
+        rc, data = tri(triage, write("short_cafe", b"\xca\xfe\xba\xbe"))
+        check("triage: 4-byte CAFEBABE routes to unknown with note", rc == 0 and data.get("route_key") == "unknown"
+              and any("truncated header" in n for n in data.get("notes", [])), str(data.get("route_key")))
+
+        rc, data = tri(triage, sys.executable)
+        check("triage: smoke test on sys.executable", rc == 0 and bool(data.get("route_key")), "rc=%s" % rc)
+
+        # 1.6: UPX on ELF, and no bare-UPX! false positive
+        rnd = random.Random(1234)
+        noise = bytes(rnd.getrandbits(8) for _ in range(200 * 1024))
+        upx = elf64(b"\x00" * 100 + b"UPX!" + b"\x00" * 16 + noise
+                    + b"$Info: This file is packed with the UPX executable packer http://upx.sf.net $\n")
+        rc, data = tri(triage, write("upx_elf.bin", upx))
+        check("triage: UPX ELF gets packer hint", "UPX-packed" in fp_names(data), str(fp_names(data)))
+        check("triage: high-entropy native file gets likely-packed note",
+              any("likely packed" in n for n in data.get("notes", [])), str(data.get("notes")))
+
+        info_only = elf64(b"\x00" * 8192 + b"$Info: This file is packed with the UPX executable packer $"
+                          + b"\x00" * 8192)
+        rc, data = tri(triage, write("upx_info_elf.bin", info_only))
+        check("triage: UPX $Info string anywhere gives packer hint", "UPX-packed" in fp_names(data),
+              str(fp_names(data)))
+
+        plain = elf64(b"\x00" * 8192 + b"some code UPX! not a header" + b"\x00" * 8192)
+        rc, data = tri(triage, write("plain_elf.bin", plain))
+        check("triage: bare UPX! mid-file gives no packer hint", rc == 0 and "UPX-packed" not in fp_names(data)
+              and not any("likely packed" in n for n in data.get("notes", [])), str(fp_names(data)))
+
+
 # ---------------------------------------------------------------------------
 # 3. check_tools.py runs, emits JSON, and finds Ghidra via --ghidra-dir.
 # ---------------------------------------------------------------------------
@@ -206,12 +332,86 @@ def test_check_tools():
     ct = os.path.join(SCRIPTS, "check_tools.py")
     rc, out = run([ct, "--json"])
     check("check_tools rc=0", rc == 0, out[:200])
-    data = json.loads(out)
+    data = jload(out)
     check("check_tools has by_task", "by_task" in data and "triage" in data["by_task"])
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, "support"))
+        open(os.path.join(d, "support", "analyzeHeadless"), "w").close()
         rc, out = run([ct, "--json", "--ghidra-dir", d])
-        check("Ghidra found via --ghidra-dir", "ghidra" in json.loads(out)["have"])
+        check("Ghidra found via --ghidra-dir", "ghidra" in jload(out).get("have", []))
+
+
+def test_check_tools_discovery():
+    print("\n[check_tools] Ghidra discovery, qemu-user aliases, JDK row")
+    ct = os.path.join(SCRIPTS, "check_tools.py")
+    with tempfile.TemporaryDirectory() as d:
+        # a PATH we control, so real tools on this machine don't leak into the results
+        bindir = os.path.join(d, "bin")
+        os.makedirs(bindir)
+        env = dict(os.environ, PATH=bindir)
+
+        def ct_run(args):
+            return run([ct] + args, env=env, timeout=60)
+
+        def ct_json(args):
+            rc, out = ct_run(["--json"] + args)
+            return rc, jload(out)
+
+        def mkfile(path):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(path, 0o755)
+
+        # 1.7: a real-looking install (support/analyzeHeadless) is found and its path reported
+        g = os.path.join(d, "ghidra_11.4_PUBLIC")
+        mkfile(os.path.join(g, "support", "analyzeHeadless"))
+        rc, data = ct_json(["--ghidra-dir", g])
+        check("ct: Ghidra found via --ghidra-dir", rc == 0 and "ghidra" in data.get("have", []), str(data)[:300])
+        check("ct: analyzeHeadless present", "analyzeHeadless" in data.get("have", []))
+        check("ct: JSON ghidra_dir is the folder", data.get("ghidra_dir") == g, str(data.get("ghidra_dir")))
+        check("ct: pyghidraRun absent without support/pyghidraRun", "pyghidraRun" not in data.get("have", []))
+        rc, out = ct_run(["--ghidra-dir", g])
+        check("ct: text prints 'ghidra dir: <path>'", rc == 0 and ("ghidra dir: " + g) in out, out[-400:])
+        mkfile(os.path.join(g, "support", "pyghidraRun"))
+        rc, data = ct_json(["--ghidra-dir", g])
+        check("ct: pyghidraRun present with support/pyghidraRun", "pyghidraRun" in data.get("have", []))
+
+        # 1.7: an empty support/ folder is not Ghidra
+        e = os.path.join(d, "ghidra_empty")
+        os.makedirs(os.path.join(e, "support"))
+        rc, data = ct_json(["--ghidra-dir", e])
+        check("ct: empty support/ is not Ghidra", rc == 0 and data.get("ghidra_dir") != e, str(data.get("ghidra_dir")))
+
+        # 1.7: version sort picks 11.10 over 11.9 (and over 9.2)
+        vroot = os.path.join(d, "versions")
+        for ver in ("9.2", "11.9", "11.10", "11.4.2"):
+            mkfile(os.path.join(vroot, "ghidra_%s_PUBLIC" % ver, "support", "analyzeHeadless"))
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import check_tools as c; "
+                "print(c.ghidra_dir(patterns=[sys.argv[2]]))")
+        rc, out = run(["-B", "-c", code, SCRIPTS, os.path.join(vroot, "ghidra_*")], env=env, timeout=60)
+        check("ct: version sort picks 11.10 over 11.9",
+              rc == 0 and out.strip() == os.path.join(vroot, "ghidra_11.10_PUBLIC"), out[-300:])
+
+        if os.name == "nt":
+            print("  skip qemu/JDK PATH tests on Windows")
+            return
+        # 1.8: qemu-user is detected through a per-arch binary name
+        rc, data = ct_json([])
+        check("ct: qemu-user missing with nothing on PATH", rc == 0 and "qemu-user" in data.get("missing", []))
+        mkfile(os.path.join(bindir, "qemu-aarch64-static"))
+        rc, data = ct_json([])
+        check("ct: qemu-user found via qemu-aarch64-static", "qemu-user" in data.get("have", []), str(data)[:300])
+        check("ct: no stale qemu-user-static entry",
+              "qemu-user-static" not in data.get("have", []) + data.get("missing", []))
+
+        # 1.8: no JDK on PATH -> jdk row says not found, java/android note it, javap stub not counted
+        mkfile(os.path.join(bindir, "javap"))   # a stub, like macOS /usr/bin/javap, with no java
+        rc, out = ct_run([])
+        check("ct: JDK row renamed to 'jdk'", rc == 0 and "  jdk        not found" in out, out[-500:])
+        check("ct: java/android tasks note a missing JDK", out.count("needs a JDK") >= 2, out[-500:])
+        rc, data = ct_json([])
+        check("ct: java_major null without java", rc == 0 and data.get("java_major") is None)
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +436,8 @@ def test_extract_endpoints():
             f.write(pad + 'axios.post("/api/v3/orders",x);' + pad)
         rc, out = run([ee, d, "--json"])
         check("extract_endpoints rc=0", rc == 0, out[:200])
-        f = json.loads(out)["findings"]
+        f = jload(out).get("findings", {})
+        f = {k: f.get(k, []) for k in ("url", "net_lib", "crypto", "endpoint", "host", "secret_ish")}
         check("finds url with template intact", "https://api.example.io/v1/items/{itemId}" in f["url"], str(f["url"]))
         check("finds net_lib OkHttp", "OkHttp" in f["net_lib"])
         check("finds crypto AES", "AES" in f["crypto"])
@@ -246,6 +447,99 @@ def test_extract_endpoints():
         bad = [h for h in f["host"] if h in ("android.app", "java.net", "com.example.app")]
         check("package names are not reported as hosts", not bad, str(bad))
         check("secrets masked by default", bool(f["secret_ish"]) and fake_key not in json.dumps(f["secret_ish"]))
+
+
+def test_extract_endpoints_robustness():
+    print("\n[extract_endpoints] FIFOs, symlinks, long lines")
+    ee = os.path.join(SCRIPTS, "extract_endpoints.py")
+
+    def scan(path, timeout):
+        rc, out = run([ee, path, "--json"], timeout=timeout)
+        j = jload(out)
+        j.setdefault("findings", {})
+        for k in ("url", "host"):
+            j["findings"].setdefault(k, [])
+        return rc, j, out
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # 1.1: a FIFO inside the tree is skipped (and counted), not opened
+        if hasattr(os, "mkfifo"):
+            d = os.path.join(tmp, "fifo_tree")
+            os.makedirs(os.path.join(d, "etc"))
+            os.mkfifo(os.path.join(d, "etc", "pipe.conf"))
+            with open(os.path.join(d, "etc", "app.conf"), "w") as f:
+                f.write("server=https://fw.fifo-test-host.com/api\n")
+            rc, j, out = scan(d, 30)
+            check("ee: FIFO in tree does not hang", rc != TIMEOUT_RC, out[:200])
+            check("ee: FIFO skipped, counted, rest scanned", rc == 0 and j.get("skipped_special") == 1
+                  and "https://fw.fifo-test-host.com/api" in j["findings"]["url"], out[:300])
+        else:
+            print("  skip FIFO test (no os.mkfifo on this platform)")
+
+        # 1.1: a symlink leaving the scanned root is not followed; an in-tree one is
+        if hasattr(os, "symlink"):
+            outside = os.path.join(tmp, "outside.txt")
+            with open(outside, "w") as f:
+                f.write("https://leak.outside-host-x.com/a\n")
+            d = os.path.join(tmp, "fw")
+            os.makedirs(os.path.join(d, "etc"))
+            with open(os.path.join(d, "etc", "real.conf"), "w") as f:
+                f.write("https://inside.tree-host-x.com/b\n")
+            try:
+                os.symlink(outside, os.path.join(d, "etc", "resolv.conf"))
+                os.symlink(os.path.join(d, "etc", "real.conf"), os.path.join(d, "etc", "alias.conf"))
+                made = True
+            except (OSError, NotImplementedError):
+                made = False   # e.g. Windows without symlink privilege
+            if made:
+                rc, j, out = scan(d, 60)
+                check("ee: out-of-tree symlink not followed (and counted)", rc == 0
+                      and "https://leak.outside-host-x.com/a" not in j["findings"]["url"]
+                      and "https://inside.tree-host-x.com/b" in j["findings"]["url"]
+                      and j.get("skipped_symlink_out_of_tree") == 1, out[:300])
+            else:
+                print("  skip symlink test (cannot create symlinks here)")
+
+        # 1.4: a URL straddling the old 4000-char window boundary is reported once, whole
+        d = os.path.join(tmp, "window")
+        os.makedirs(d)
+        with open(os.path.join(d, "a.js"), "w") as f:
+            f.write("x" * 4280 + ' "https://api.realhost-example.com/v1" ' + "y" * 5000 + "\n")
+        rc, j, out = scan(d, 60)
+        urls = [u for u in j["findings"]["url"] if "realh" in u]
+        hosts = [h for h in j["findings"]["host"] if "realh" in h]
+        check("ee: window-boundary URL reported once, untruncated",
+              rc == 0 and urls == ["https://api.realhost-example.com/v1"], repr(urls) + " " + out[:200])
+        check("ee: window-boundary host not truncated", hosts == ["api.realhost-example.com"], repr(hosts))
+
+        # 1.4: a ~5 MB single minified-like line (plus hostile runs) stays fast
+        d = os.path.join(tmp, "long")
+        os.makedirs(d)
+        pieces = ['function a%d(b,c){return b.c+c.d*%d}e.get("/api/v1/i/%d");'
+                  'fetch("https://svc%d.example-api.com/v2/x?q=%d");t.p="editor.language.de";'
+                  % (i, i, i, i % 50, i) for i in range(40000)]
+        body = "".join(pieces)
+        with open(os.path.join(d, "bundle.min.js"), "w") as f:
+            f.write(body[:4500000] + ("eyJ" + "a" * 20 + "-") * 20000 + "a." * 50000 + "\n")
+        t0 = time.time()
+        rc, j, out = scan(d, 60)
+        dt = time.time() - t0
+        check("ee: 5 MB single line under 10 s", rc == 0 and dt < 10, "rc=%s %.1fs" % (rc, dt))
+        check("ee: long line still finds URLs", "https://svc7.example-api.com/v2/x?q=7" in j["findings"]["url"])
+
+        # 1.4: unterminated string literals full of escaped quotes stay linear (each \" used to
+        # restart a scan to the end of the line) and literals after them are still found
+        d = os.path.join(tmp, "quotes")
+        os.makedirs(d)
+        with open(os.path.join(d, "q.js"), "w") as f:
+            f.write('var s="' + '\\"a' * 350000 + "\n" + "var t='" + "\\'" * 500000 + "\n"
+                    + 'var u="' + '\\"' * 500000 + "\n" + 'h="cdn.quote-test-host.com";\n')
+        t0 = time.time()
+        rc, j, out = scan(d, 60)
+        dt = time.time() - t0
+        check("ee: 1 MB lines of escaped quotes under 10 s", rc == 0 and dt < 10, "rc=%s %.1fs" % (rc, dt))
+        check("ee: literal after escaped-quote lines still scanned",
+              "cdn.quote-test-host.com" in j["findings"]["host"], repr(list(j["findings"]["host"])[:5]))
 
 
 # ---------------------------------------------------------------------------
@@ -301,10 +595,7 @@ def test_app_inspect():
 
     def inspect(path):
         rc, out = run([ai, path, "--json"])
-        try:
-            return rc, json.loads(out)
-        except ValueError:
-            return rc, {"_raw": out[:300]}
+        return rc, jload(out)
 
     with tempfile.TemporaryDirectory() as d:
         # Android
@@ -418,6 +709,173 @@ def test_app_inspect():
         rc, r = inspect(bad)
         check("no crash on malformed manifest", rc == 0, str(r)[:200])
 
+
+def test_app_inspect_robustness():
+    print("\n[app_inspect] hostile AXML, size caps, partial reports, fat64, FIFOs")
+    with tempfile.TemporaryDirectory() as tmp:
+        ai = os.path.join(SCRIPTS, "app_inspect.py")
+
+        def inspect(path, timeout=30):
+            t0 = time.time()
+            rc, out = run([ai, path, "--json"], timeout=timeout)
+            return rc, jload(out), time.time() - t0
+
+        def thin(cpu, sub, cmds=b"", ncmds=0):
+            return struct.pack("<IIIIIIII", 0xFEEDFACF, cpu, sub, 2, ncmds, len(cmds), 0, 0) + cmds
+
+        # 1.2: string pool claims 50,000,000 strings inside a 28-byte chunk (the 172-byte hang.apk shape)
+        pool = struct.pack("<HHIIIIII", 0x0001, 28, 28, 50000000, 0, 0, 28, 0)
+        axml = struct.pack("<HHI", 0x0003, 8, 8 + len(pool)) + pool
+        hang = os.path.join(tmp, "hang.apk")
+        with zipfile.ZipFile(hang, "w") as z:
+            z.writestr("AndroidManifest.xml", axml)
+        rc, r, dt = inspect(hang, timeout=10)
+        check("app_inspect: oversized AXML string count finishes fast", rc == 0 and dt < 10
+              and r.get("platform") == "android", "rc=%s dt=%.1f %s" % (rc, dt, str(r)[:200]))
+
+        # same, plus an element whose attribute count overruns its chunk, then a resource
+        # map (last chunk) that declares 4000 bytes but has only 8: both must be clamped
+        elem = struct.pack("<HHIII", 0x0102, 16, 36, 1, 0xFFFFFFFF) + struct.pack("<IIHHHHHH", 0xFFFFFFFF, 0, 20, 20,
+                                                                                  65535, 0, 0, 0)
+        resmap = struct.pack("<HHI", 0x0180, 8, 8 + 4000) + struct.pack("<II", 0x01010003, 0x01010006)
+        axml2 = struct.pack("<HHI", 0x0003, 8, 8 + len(pool) + len(elem) + len(resmap)) + pool + elem + resmap
+        hang2 = os.path.join(tmp, "hang2.apk")
+        with zipfile.ZipFile(hang2, "w") as z:
+            z.writestr("AndroidManifest.xml", axml2)
+        rc, r, dt = inspect(hang2, timeout=10)
+        check("app_inspect: oversized resmap/attribute counts are clamped", rc == 0 and "_raw" not in r
+              and "manifest parse failed" not in str(r.get("error", "")), "rc=%s %s" % (rc, str(r)[:200]))
+
+        # 1.2: 8000 32-byte string pools, each with one UTF-16 string claiming ~2^31 chars that
+        # points at its own header (stringsStart=12 lands on styles=0xFFFFFFFF, read as a
+        # 0x7FFFFFFF-char length). The decode budget is global, so memory stays bounded.
+        chunk = struct.pack("<HHIIIIII", 0x0001, 28, 32, 1, 0xFFFFFFFF, 0, 12, 0) + struct.pack("<I", 0)
+        selfref = b"".join([chunk] * 8000)
+        axml3 = struct.pack("<HHI", 0x0003, 8, 8 + len(selfref)) + selfref
+        bomb = os.path.join(tmp, "selfref.apk")
+        with zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("AndroidManifest.xml", axml3)
+        code = "\n".join([
+            "import resource, sys, zipfile",
+            "sys.path.insert(0, sys.argv[1])",
+            "import app_inspect",
+            "d = zipfile.ZipFile(sys.argv[2]).read('AndroidManifest.xml')",
+            "try:",
+            "    for _ in app_inspect.parse_axml(d): pass",
+            "except Exception: pass",
+            "rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss",
+            "print(rss >> 20 if sys.platform == 'darwin' else rss >> 10)"])
+        try:
+            import resource  # noqa: F401  (POSIX only)
+            have_resource = True
+        except ImportError:
+            have_resource = False
+        if have_resource:
+            rc, out = run(["-B", "-c", code, SCRIPTS, bomb], timeout=30)
+            last = (out.strip().splitlines() or [""])[-1]
+            mb = int(last) if rc == 0 and last.isdigit() else -1
+            check("app_inspect: self-referencing string pools stay under 200 MB", rc == 0 and 0 <= mb < 200,
+                  "rc=%s rss=%sMB %s" % (rc, mb, out[-200:]))
+        else:
+            print("  skip AXML memory test (no resource module on this platform)")
+
+        # 1.3: a manifest declaring 17 MB (deflates to a few KB) is refused by size, not decompressed
+        big = os.path.join(tmp, "bomb.apk")
+        with zipfile.ZipFile(big, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("AndroidManifest.xml", b"\x03\x00\x08\x00" + b"\x00" * (17 << 20))
+            z.writestr("classes.dex", "dex\n035\x00")
+        rc, r, dt = inspect(big, timeout=30)
+        check("app_inspect: oversized zip member flagged, not read", rc == 0 and "limit" in str(r.get("manifest_error"))
+              and r.get("dex_files") == 1, str(r)[:300])
+
+        big_ipa = os.path.join(tmp, "bomb.ipa")
+        with zipfile.ZipFile(big_ipa, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("Payload/A.app/Info.plist", b"\x00" * (17 << 20))
+        rc, r, dt = inspect(big_ipa, timeout=30)
+        check("app_inspect: oversized Info.plist flagged, not parsed", rc == 0 and "limit" in str(r.get("error")),
+              str(r)[:300])
+
+        # 1.3: malformed plist value types keep the rest of the report
+        info = plistlib.dumps({"CFBundleIdentifier": "com.good.app", "CFBundleShortVersionString": "9.9",
+                               "CFBundleExecutable": "Good", "CFBundleURLTypes": ["oops", {"CFBundleURLSchemes": "x"},
+                                                                                 {"CFBundleURLSchemes": ["good", 7]}],
+                               "NSAppTransportSecurity": "yes", "UIBackgroundModes": 5})
+        # truncated code-signature superblob (claims 5 entries in 12 bytes), then a load command cut short:
+        # LC_ENCRYPTION_INFO_64 whose body is missing because the file ends right after its 8-byte header
+        sig = struct.pack(">III", 0xFADE0CC0, 12, 5)
+        cs = struct.pack("<IIII", 0x1D, 16, 32 + 16 + 8 + 8, len(sig))
+        cut = struct.pack("<II", 0x2C, 24)
+        macho = thin(0x0100000C, 0, cs + cut, ncmds=2) + b"\x00" * 8 + sig
+        macho = macho[:32 + 16 + 8 + 4]                       # 4 bytes into the missing body
+        bad = os.path.join(tmp, "bad.ipa")
+        with zipfile.ZipFile(bad, "w") as z:
+            z.writestr("Payload/Good.app/Info.plist", info)
+            z.writestr("Payload/Good.app/Good", macho)
+        rc, r, dt = inspect(bad)
+        check("app_inspect: malformed plist values give a partial report", rc == 0 and r.get("bundle_id") == "com.good.app"
+              and r.get("version") == "9.9" and r.get("url_schemes") == ["good"] and r.get("background_modes") == []
+              and "Traceback" not in str(r), str(r)[:300])
+        sl = (r.get("slices") or [{}])[0]
+        check("app_inspect: truncated Mach-O load command recorded as *_error", sl.get("arch") == "arm64"
+              and any(k.endswith("_error") for k in sl), str(sl))
+
+        root_plist = os.path.join(tmp, "list.ipa")
+        with zipfile.ZipFile(root_plist, "w") as z:
+            z.writestr("Payload/L.app/Info.plist", plistlib.dumps(["not", "a", "dict"]))
+        rc, r, dt = inspect(root_plist)
+        check("app_inspect: non-dict Info.plist root is a clean error", rc == 0 and "dictionary" in str(r.get("error")),
+              str(r)[:300])
+
+        # 1.5: arm64e (subtype 0x80000002) named arm64e; fat64 (0xCAFEBABF) recognized
+        s1, s2 = thin(0x01000007, 3), thin(0x0100000C, 0x80000002)
+        fat = struct.pack(">II", 0xCAFEBABE, 2) + struct.pack(">IIIII", 0x01000007, 3, 4096, len(s1), 12) \
+            + struct.pack(">IIIII", 0x0100000C, 0x80000002, 8192, len(s2), 14)
+        fat = fat.ljust(4096, b"\x00") + s1.ljust(4096, b"\x00") + s2
+        p = os.path.join(tmp, "fat.bin")
+        with open(p, "wb") as f:
+            f.write(fat)
+        rc, r, dt = inspect(p)
+        archs = [s.get("arch") for s in r.get("slices", [])]
+        check("app_inspect: fat arm64e slice named arm64e", archs == ["x86_64", "arm64e"], str(r)[:300])
+        fat64 = struct.pack(">II", 0xCAFEBABF, 2) + struct.pack(">IIQQII", 0x01000007, 8, 4096, len(s1), 12, 0) \
+            + struct.pack(">IIQQII", 0x0100000C, 0x80000002, 8192, len(s2), 14, 0)
+        fat64 = fat64.ljust(4096, b"\x00") + thin(0x01000007, 8).ljust(4096, b"\x00") + s2
+        p = os.path.join(tmp, "fat64.bin")
+        with open(p, "wb") as f:
+            f.write(fat64)
+        rc, r, dt = inspect(p)
+        archs = [s.get("arch") for s in r.get("slices", [])]
+        check("app_inspect: fat64 (0xCAFEBABF) parsed, x86_64h named", archs == ["x86_64h", "arm64e"], str(r)[:300])
+
+        # 1.1: FIFOs and out-of-tree symlinks in walked folders (POSIX only)
+        if not hasattr(os, "mkfifo"):
+            print("  skip FIFO/symlink tests (no os.mkfifo on this platform)")
+            return
+        unity = os.path.join(tmp, "FifoGame")
+        os.makedirs(os.path.join(unity, "Demo_Data"))
+        os.mkfifo(os.path.join(unity, "Demo_Data", "globalgamemanagers"))
+        with open(os.path.join(unity, "GameAssembly.dll"), "wb") as f:
+            f.write(b"MZ")
+        rc, r, dt = inspect(unity, timeout=10)
+        check("app_inspect: FIFO in game folder skipped, no hang", rc == 0 and r.get("engine") == "Unity"
+              and r.get("skipped_special", 0) >= 1, "rc=%s %s" % (rc, str(r)[:200]))
+
+        fifo = os.path.join(tmp, "pipe.apk")
+        os.mkfifo(fifo)
+        rc, r, dt = inspect(fifo, timeout=10)
+        check("app_inspect: FIFO as the target exits 2, no hang", rc == 2, "rc=%s %s" % (rc, str(r)[:200]))
+
+        outside = os.path.join(tmp, "outside.pck")
+        with open(outside, "wb") as f:
+            f.write(b"GDPC" + struct.pack("<IIII", 2, 4, 2, 1))
+        leak = os.path.join(tmp, "LeakGame")
+        os.makedirs(leak)
+        os.symlink(outside, os.path.join(leak, "game.pck"))
+        rc, r, dt = inspect(leak, timeout=10)
+        check("app_inspect: out-of-tree symlink not followed", rc == 0 and "_raw" not in r
+              and r.get("engine") != "Godot", str(r)[:200])
+
+
 # ---------------------------------------------------------------------------
 # 6. Structure: SKILL.md frontmatter, referenced paths, manifests.
 # ---------------------------------------------------------------------------
@@ -478,8 +936,10 @@ def test_structure():
     check("no dangling references inside scripts", not dangling, ",".join(sorted(dangling)))
 
     # manifests are valid JSON with matching plugin names
-    mp = json.load(open(os.path.join(ROOT, ".claude-plugin", "marketplace.json")))
-    pj = json.load(open(os.path.join(ROOT, ".claude-plugin", "plugin.json")))
+    with open(os.path.join(ROOT, ".claude-plugin", "marketplace.json"), encoding="utf-8") as fh:
+        mp = jload(fh.read())
+    with open(os.path.join(ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
+        pj = jload(fh.read())
     check("marketplace.json valid + has plugins", bool(mp.get("plugins")))
     check("plugin.json name matches skill", pj.get("name") == "reverse-engineering", pj.get("name"))
     entry_names = {p["name"] for p in mp.get("plugins", [])}
@@ -488,8 +948,15 @@ def test_structure():
 
 def main():
     print("Testing reverse-engineering skill at:\n  " + SKILL)
-    for t in (test_compile, test_triage, test_check_tools, test_extract_endpoints, test_app_inspect, test_structure):
-        t()
+    for t in (test_compile, test_triage, test_triage_robustness, test_check_tools, test_check_tools_discovery,
+              test_extract_endpoints, test_extract_endpoints_robustness, test_app_inspect,
+              test_app_inspect_robustness, test_structure):
+        try:
+            t()
+        except Exception:
+            # one crashing group records a failure; the remaining groups still run
+            check(t.__name__ + " crashed", False, traceback.format_exc().strip().splitlines()[-1])
+            traceback.print_exc()
     print("\n" + "=" * 60)
     if _failures:
         print("FAILED ({} ok, {} failed):".format(_passed, len(_failures)))

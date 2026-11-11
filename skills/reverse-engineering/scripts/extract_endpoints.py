@@ -27,10 +27,9 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
 
-SEGMENT = 4000      # long lines (minified bundles) are scanned in overlapping windows
-OVERLAP = 300
 MAX_LOCS = 8
 
 TLDS = (r"com|net|org|io|dev|app|co|ai|cloud|gov|edu|me|xyz|tech|info|biz|us|uk|de|"
@@ -38,7 +37,10 @@ TLDS = (r"com|net|org|io|dev|app|co|ai|cloud|gov|edu|me|xyz|tech|info|biz|us|uk|
 
 URL_RE = re.compile(r"""\b(?:https?|wss?)://[^\s"'`<>\\\]]{3,}""")
 HOST_RE = re.compile(r"""(?<![\w.-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:%s))(?![\w-]|\.[a-z])""" % TLDS, re.I)
-STRING_LIT = re.compile(r'''"((?:[^"\\\n]|\\.){3,})"|'((?:[^'\\\n]|\\.){3,})'|`([^`\n]{3,})`''')
+# A quote right after a backslash never opens a literal. Without that, every \" in an
+# unterminated run was a fresh start that rescanned to the end of the line (quadratic on
+# one long minified line); with it, at most one start per quote type fails per line.
+STRING_LIT = re.compile(r'''(?<!\\)"((?:[^"\\\n]|\\.){3,})"|(?<!\\)'((?:[^'\\\n]|\\.){3,})'|`([^`\n]{3,})`''')
 
 ANNOTATION_RE = re.compile(r"""@(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s*\(\s*(?:value\s*=\s*)?"([^"]*)\"""")
 HTTP_ANNOT_RE = re.compile(r"""@HTTP\s*\(\s*method\s*=\s*"(\w+)"\s*,\s*path\s*=\s*"([^"]*)\"""")
@@ -54,7 +56,9 @@ PATTERNS = {
     # (OkHttp in OkHttpClient, EVP_ in EVP_EncryptInit).
     "crypto": re.compile(r"""\b(AES|DES|RSA|ECB|CBC|GCM|PBKDF2|HMAC|SHA-?(?:1|256|512)|MD5|SecretKeySpec|Cipher\.getInstance|EVP_|CryptoKit|CommonCrypto|KeyStore|javax\.crypto|BCrypt)"""),
     "net_lib": re.compile(r"""\b(Retrofit|OkHttp|HttpURLConnection|Volley|Ktor|Apollo|URLSession|NSURLSession|Alamofire|axios|XMLHttpRequest|WebSocket|gRPC|grpc|socket\.io|HttpClient)"""),
-    "secret_ish": re.compile(r"""\b(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_\-]{35}|sk_live_[0-9A-Za-z]{10,}|gh[pousr]_[0-9A-Za-z]{30,}|xox[baprs]-[0-9A-Za-z-]{10,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})"""),
+    # The JWT branch may not start inside a longer [\w-] run: with only \b, every
+    # "-eyJ" in one long run was a fresh start that rescanned the whole run.
+    "secret_ish": re.compile(r"""\b(AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_\-]{35}|sk_live_[0-9A-Za-z]{10,}|gh[pousr]_[0-9A-Za-z]{30,}|xox[baprs]-[0-9A-Za-z-]{10,}|(?<![\w-])eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})"""),
 }
 
 CODE_EXT = {".java", ".kt", ".kts", ".smali", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
@@ -90,10 +94,21 @@ def host_of(url: str) -> str:
 
 
 def clean_url(url: str) -> str:
-    url = url.rstrip(".,;:")
-    while url and url[-1] in ")}]" and url.count(url[-1]) > url.count({")": "(", "}": "{", "]": "["}[url[-1]]):
-        url = url[:-1].rstrip(".,;:")
-    return url
+    # Strip trailing punctuation and unbalanced closing brackets. Counts are taken
+    # once and updated as we trim, so a match ending in a long run of ")" stays linear.
+    opener = {")": "(", "}": "{", "]": "["}
+    counts = {c: url.count(c) for c in "(){}[]"}
+    end = len(url)
+    while end:
+        ch = url[end - 1]
+        if ch in ".,;:":
+            end -= 1
+        elif ch in opener and counts[ch] > counts[opener[ch]]:
+            counts[ch] -= 1
+            end -= 1
+        else:
+            break
+    return url[:end]
 
 
 # Generic TLDs are rarely the tail of a dotted identifier; ccTLD-like ones (.de,
@@ -134,14 +149,6 @@ class Results:
             locs.append(loc)
 
 
-def segments(line: str):
-    if len(line) <= SEGMENT:
-        yield line
-        return
-    for i in range(0, len(line), SEGMENT):
-        yield line[i:i + SEGMENT + OVERLAP]
-
-
 def scan_text(text: str, rel: str, is_code: bool, res: Results, keep_noise: bool) -> None:
     pending_smali = None
     for lineno, line in enumerate(text.splitlines(), 1):
@@ -157,44 +164,57 @@ def scan_text(text: str, rel: str, is_code: bool, res: Results, keep_noise: bool
                 pending_smali = None
             elif line.strip().startswith(".end annotation"):
                 pending_smali = None
-        for seg in segments(line):
-            for m in ANNOTATION_RE.finditer(seg):
-                res.add("endpoint", "%s %s" % (m.group(1), m.group(2)), loc)
-            for m in HTTP_ANNOT_RE.finditer(seg):
-                res.add("endpoint", "%s %s" % (m.group(1).upper(), m.group(2)), loc)
-            for m in CLIENT_CALL_RE.finditer(seg):
-                res.add("endpoint", "%s %s" % (m.group(1).upper(), m.group(2)), loc)
-            for m in FETCH_RE.finditer(seg):
-                res.add("endpoint", "FETCH %s" % m.group(1), loc)
-            for m in URL_RE.finditer(seg):
-                url = clean_url(m.group(0))
-                h = host_of(url)
-                if keep_noise or h not in NOISE_HOSTS:
-                    res.add("url", url, loc)
-                    if h:
-                        res.add("host", h, loc)   # hosts taken from URLs are high-precision
-            # Hostnames: only inside string literals in code (identifiers and package
-            # names produce endless false positives); anywhere in config/text files.
-            if is_code:
-                chunks = [next(g for g in sm.groups() if g is not None) for sm in STRING_LIT.finditer(seg)]
-            else:
-                chunks = [seg]
-            for chunk in chunks:
-                for hm in HOST_RE.finditer(chunk):
-                    h = hm.group(1).lower()
-                    if (plausible_host(h) and host_in_context(chunk, hm.start(1), hm.end(1), h)
-                            and (keep_noise or h not in NOISE_HOSTS)):
-                        res.add("host", h, loc)
-            for cat, pat in PATTERNS.items():
-                for pm in pat.finditer(seg):
-                    res.add(cat, pm.group(1), loc)
+        # Each line is scanned whole, once per regex. (Overlapping fixed-size windows
+        # over long minified lines reported matches cut at the window edge as extra,
+        # truncated URLs and hosts.) Keep every pattern free of quadratic backtracking on
+        # multi-MB lines (see the secret_ish JWT note).
+        for m in ANNOTATION_RE.finditer(line):
+            res.add("endpoint", "%s %s" % (m.group(1), m.group(2)), loc)
+        for m in HTTP_ANNOT_RE.finditer(line):
+            res.add("endpoint", "%s %s" % (m.group(1).upper(), m.group(2)), loc)
+        for m in CLIENT_CALL_RE.finditer(line):
+            res.add("endpoint", "%s %s" % (m.group(1).upper(), m.group(2)), loc)
+        for m in FETCH_RE.finditer(line):
+            res.add("endpoint", "FETCH %s" % m.group(1), loc)
+        for m in URL_RE.finditer(line):
+            url = clean_url(m.group(0))
+            h = host_of(url)
+            if keep_noise or h not in NOISE_HOSTS:
+                res.add("url", url, loc)
+                if h:
+                    res.add("host", h, loc)   # hosts taken from URLs are high-precision
+        # Hostnames: only inside string literals in code (identifiers and package
+        # names produce endless false positives); anywhere in config/text files.
+        if is_code:
+            chunks = [next(g for g in sm.groups() if g is not None) for sm in STRING_LIT.finditer(line)]
+        else:
+            chunks = [line]
+        for chunk in chunks:
+            for hm in HOST_RE.finditer(chunk):
+                h = hm.group(1).lower()
+                if (plausible_host(h) and host_in_context(chunk, hm.start(1), hm.end(1), h)
+                        and (keep_noise or h not in NOISE_HOSTS)):
+                    res.add("host", h, loc)
+        for cat, pat in PATTERNS.items():
+            for pm in pat.finditer(line):
+                res.add(cat, pm.group(1), loc)
 
 
-def iter_files(root: str, exts, max_bytes: int, skipped: list):
+def _inside(path: str, root_real: str) -> bool:
+    real = os.path.realpath(path)
+    return real == root_real or real.startswith(root_real.rstrip(os.sep) + os.sep)
+
+
+def iter_files(root: str, exts, max_bytes: int, skipped: dict):
+    """Yield regular files under root. Never follows a symlink out of the scanned tree
+    (extracted firmware roots are full of absolute links into the analyst's own /etc,
+    /tmp ...) and never opens FIFOs, sockets or device nodes (open().read() on those
+    blocks forever or never ends). Skips are tallied in skipped[reason]."""
     if os.path.isfile(root):
         yield root
         return
-    for dirpath, dirnames, filenames in os.walk(root):
+    root_real = os.path.realpath(root)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in filenames:
             ext = os.path.splitext(fn)[1].lower()
@@ -202,8 +222,17 @@ def iter_files(root: str, exts, max_bytes: int, skipped: list):
                 continue
             path = os.path.join(dirpath, fn)
             try:
-                if os.path.getsize(path) > max_bytes:
-                    skipped.append(path)
+                st = os.lstat(path)
+                if stat.S_ISLNK(st.st_mode):
+                    if not _inside(path, root_real):
+                        skipped["symlink_out_of_tree"].append(path)
+                        continue
+                    st = os.stat(path)    # in-tree link: judge what it points at
+                if not stat.S_ISREG(st.st_mode):
+                    skipped["special"].append(path)
+                    continue
+                if st.st_size > max_bytes:
+                    skipped["large"].append(path)
                     continue
             except OSError:
                 continue
@@ -233,8 +262,10 @@ def main(argv=None) -> int:
         exts = DEFAULT_EXT
 
     base = args.path if os.path.isdir(args.path) else (os.path.dirname(args.path) or ".")
-    res, n, skipped = Results(), 0, []
-    for path in iter_files(args.path, exts, args.max_bytes, skipped):
+    res, n = Results(), 0
+    skipped_all = {"large": [], "special": [], "symlink_out_of_tree": []}
+    skipped = skipped_all["large"]
+    for path in iter_files(args.path, exts, args.max_bytes, skipped_all):
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 text = f.read()
@@ -249,7 +280,10 @@ def main(argv=None) -> int:
         findings["secret_ish"] = {mask(k): v for k, v in findings["secret_ish"].items()}
 
     if args.json:
-        print(json.dumps({"files_scanned": n, "skipped_large": len(skipped), "findings": findings}, indent=2))
+        print(json.dumps({"files_scanned": n, "skipped_large": len(skipped),
+                          "skipped_special": len(skipped_all["special"]),
+                          "skipped_symlink_out_of_tree": len(skipped_all["symlink_out_of_tree"]),
+                          "findings": findings}, indent=2))
         return 0
 
     titles = {
@@ -283,6 +317,12 @@ def main(argv=None) -> int:
               "first (see the target's references/ playbook), then re-run on the output directory.")
     if skipped:
         print("\nnote: skipped %d file(s) over --max-bytes, e.g. %s" % (len(skipped), skipped[0]))
+    if skipped_all["special"]:
+        print("note: skipped %d non-regular file(s) (FIFO/socket/device), e.g. %s"
+              % (len(skipped_all["special"]), skipped_all["special"][0]))
+    if skipped_all["symlink_out_of_tree"]:
+        print("note: skipped %d symlink(s) pointing outside the scanned tree, e.g. %s"
+              % (len(skipped_all["symlink_out_of_tree"]), skipped_all["symlink_out_of_tree"][0]))
     print("\n" + "-" * 70)
     print("Leads, not conclusions: confirm each against the code or live traffic.")
     return 0

@@ -21,9 +21,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import mmap
 import os
 import plistlib
 import re
+import stat
 import struct
 import sys
 import zipfile
@@ -40,9 +42,60 @@ ANDROID_ATTR_IDS = {
     0x010104ec: "usesCleartextTraffic", 0x01010527: "networkSecurityConfig",
 }
 COMPONENTS = ("activity", "activity-alias", "service", "receiver", "provider")
+MAX_AXML_STRINGS = 500000
+MAX_META_BYTES = 16 << 20          # manifests and Info.plist: real ones are kilobytes
+MAX_EXE_BYTES = 256 << 20          # Mach-O inside an IPA: read at most this much, flag truncation
 
 
-def _axml_str(data, offsets, base, i, utf8):
+def _err(e):
+    return "%s: %s" % (type(e).__name__, e)
+
+
+def _read_member(z, name, limit, truncate=False):
+    """Read a zip member without trusting it to be small. Returns (bytes or None, note or None)."""
+    size = z.getinfo(name).file_size
+    if size > limit and not truncate:
+        return None, "%s is %d bytes (declared), over the %d-byte limit; not read" % (name, size, limit)
+    with z.open(name) as f:
+        data = f.read(limit)
+    if size > limit:
+        return data, "%s is %d bytes; only the first %d were read" % (name, size, limit)
+    return data, None
+
+
+def _map_file(f):
+    """Map an open file read-only (no full read into memory); empty files give b""."""
+    try:
+        return mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    except ValueError:                                     # empty file
+        return b""
+
+
+def _regular_in_tree(paths, root, skipped):
+    """Keep regular files; drop FIFOs/devices/sockets and symlinks that leave root (counted in skipped)."""
+    real_root = os.path.realpath(root)
+    out = []
+    for p in paths:
+        try:
+            st = os.lstat(p)
+            if stat.S_ISLNK(st.st_mode):
+                rp = os.path.realpath(p)
+                if os.path.commonpath([real_root, rp]) != real_root:
+                    skipped["skipped_symlink_out_of_tree"] = skipped.get("skipped_symlink_out_of_tree", 0) + 1
+                    continue
+                st = os.stat(p)
+        except (OSError, ValueError):
+            skipped["skipped_special"] = skipped.get("skipped_special", 0) + 1
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            skipped["skipped_special"] = skipped.get("skipped_special", 0) + 1
+            continue
+        out.append(p)
+    return out
+
+
+def _axml_str(data, offsets, base, i, utf8, limit):
+    """Decode string i of a pool, at most `limit` characters long."""
     off = base + struct.unpack_from("<I", data, offsets + i * 4)[0]
     if utf8:
         off += 2 if data[off] & 0x80 else 1               # skip UTF-16 length
@@ -51,12 +104,12 @@ def _axml_str(data, offsets, base, i, utf8):
             n, off = ((n & 0x7F) << 8) | data[off + 1], off + 2
         else:
             off += 1
-        return data[off:off + n].decode("utf-8", "replace")
+        return data[off:off + min(n, limit)].decode("utf-8", "replace")
     n = struct.unpack_from("<H", data, off)[0]
     off += 2
     if n & 0x8000:
         n, off = ((n & 0x7FFF) << 16) | struct.unpack_from("<H", data, off)[0], off + 2
-    return data[off:off + n * 2].decode("utf-16-le", "replace")
+    return data[off:off + min(n, limit) * 2].decode("utf-16-le", "replace")
 
 
 def parse_axml(data):
@@ -65,22 +118,33 @@ def parse_axml(data):
         raise ValueError("not Android binary XML")
     pos = struct.unpack_from("<H", data, 2)[0]
     strings, resmap = [], []
+    # Decoded characters across ALL string pools: a real manifest decodes to at most
+    # len(data) characters, so overlapping or self-referencing strings (or many tiny
+    # pools) cannot blow up memory. Each string is cut to what is left of the budget.
+    budget = 2 * len(data) + 4096
     while pos + 8 <= len(data):
         ctype, hsize, csize = struct.unpack_from("<HHI", data, pos)
         if csize < 8:
             break
+        # Header counts are attacker-controlled: clamp them to the bytes the chunk really has.
+        body = max(0, min(csize, len(data) - pos) - hsize)
         if ctype == 0x0001:                                # string pool
             count, _styles, flags, sstart = struct.unpack_from("<IIII", data, pos + 8)
+            count = min(count, body // 4, MAX_AXML_STRINGS - len(strings))   # total, not per pool
             for i in range(count):
                 try:
-                    strings.append(_axml_str(data, pos + hsize, pos + sstart, i, bool(flags & 0x100)))
+                    s = _axml_str(data, pos + hsize, pos + sstart, i, bool(flags & 0x100), budget) if budget > 0 else ""
                 except (struct.error, IndexError):
-                    strings.append("")
+                    s = ""
+                budget -= len(s)
+                strings.append(s)
         elif ctype == 0x0180:                              # resource id map
-            resmap = list(struct.unpack_from("<%dI" % ((csize - hsize) // 4), data, pos + hsize))
+            resmap = list(struct.unpack_from("<%dI" % (body // 4), data, pos + hsize))
         elif ctype == 0x0102:                              # start element
             ext = pos + hsize
             _ns, name_i, astart, asize, acount = struct.unpack_from("<IIHHH", data, ext)
+            avail = body - astart
+            acount = min(acount, max(0, avail) // asize) if asize else min(acount, 1)
             attrs = {}
             for a in range(acount):
                 _ans, ai, raw, _sz, _r0, dtype, d = struct.unpack_from("<IIIHBBI", data, ext + astart + a * asize)
@@ -112,11 +176,14 @@ def inspect_apk(path):
         if "AndroidManifest.xml" not in names:
             return {"platform": "android", "error": "no AndroidManifest.xml (an .aab stores it as protobuf; "
                                                     "convert with bundletool build-apks first)"}
-        manifest = z.read("AndroidManifest.xml")
+        manifest, too_big = _read_member(z, "AndroidManifest.xml", MAX_META_BYTES)
     r = {"platform": "android", "permissions": [], "exported": [], "deep_links": [], "app": {}}
+    if too_big:
+        r["manifest_error"] = too_big
+        manifest = b""
     comp, filt = None, None
     try:
-        for ev, tag, a in parse_axml(manifest):
+        for ev, tag, a in parse_axml(manifest) if manifest else ():
             if ev == "end":
                 if tag == "intent-filter" and filt is not None and comp is not None:
                     for s in sorted(filt["schemes"]) or []:
@@ -136,7 +203,7 @@ def inspect_apk(path):
                 r["app"] = {k: a[k] for k in ("name", "debuggable", "allowBackup", "usesCleartextTraffic",
                                               "networkSecurityConfig") if k in a}
             elif tag in COMPONENTS:
-                name = a.get("name") or "?"
+                name = str(a.get("name") or "?")
                 if name.startswith(".") and r.get("package"):
                     name = r["package"] + name
                 comp = {"type": tag, "name": name, "exported": a.get("exported"),
@@ -152,7 +219,7 @@ def inspect_apk(path):
                     filt["schemes"].add(str(a["scheme"]))
                 if a.get("host"):
                     filt["hosts"].add(str(a["host"]))
-    except (ValueError, struct.error, IndexError) as e:
+    except (ValueError, struct.error, IndexError, TypeError, AttributeError) as e:
         r["error"] = "manifest parse failed: %s" % e
     for c in r.pop("_components", []):
         if c["launcher"]:
@@ -171,22 +238,38 @@ def inspect_apk(path):
 # --------------------------------------------------------------------------
 # Apple: Info.plist, Mach-O encryption + entitlements
 # --------------------------------------------------------------------------
-CPU = {7: "x86", 0x01000007: "x86_64", 12: "arm", 0x0100000C: "arm64", 0x0200000C: "arm64_32"}
+CPU = {7: "i386", 0x01000007: "x86_64", 12: "arm", 0x0100000C: "arm64", 0x0200000C: "arm64_32"}
+ARM_SUB = {5: "armv4t", 6: "armv6", 7: "armv5", 9: "armv7", 11: "armv7s", 12: "armv7k", 14: "armv6m",
+           15: "armv7m", 16: "armv7em"}
 ENT_KEYS = ("application-identifier", "com.apple.developer.team-identifier", "get-task-allow",
             "keychain-access-groups", "com.apple.security.application-groups",
             "com.apple.developer.associated-domains", "aps-environment",
             "com.apple.security.app-sandbox", "com.apple.security.network.client")
 
 
+def arch_name(cpu, sub):
+    """lipo-style architecture name (arm64e, x86_64h, armv7s, ...) from cputype + cpusubtype."""
+    sub &= 0x00FFFFFF                                      # drop capability bits (arm64e sets 0x80000000)
+    if cpu == 0x0100000C:
+        return {1: "arm64v8", 2: "arm64e"}.get(sub, "arm64")
+    if cpu == 0x01000007:
+        return "x86_64h" if sub == 8 else "x86_64"
+    if cpu == 12:
+        return ARM_SUB.get(sub, "arm")
+    return CPU.get(cpu, hex(cpu))
+
+
 def _entitlements(blob):
     if len(blob) < 12 or struct.unpack_from(">I", blob, 0)[0] != 0xFADE0CC0:
         return None
-    for i in range(min(struct.unpack_from(">I", blob, 8)[0], 64)):
+    for i in range(min(struct.unpack_from(">I", blob, 8)[0], 64, (len(blob) - 12) // 8)):
         _t, off = struct.unpack_from(">II", blob, 12 + i * 8)
         if off + 8 <= len(blob) and struct.unpack_from(">I", blob, off)[0] == 0xFADE7171:
             try:
                 ents = plistlib.loads(blob[off + 8:off + struct.unpack_from(">I", blob, off + 4)[0]])
             except Exception:
+                return None
+            if not isinstance(ents, dict):
                 return None
             return {k: ents[k] if isinstance(ents[k], (bool, int)) else str(ents[k]) for k in ENT_KEYS if k in ents}
     return None
@@ -199,36 +282,64 @@ def _thin(data):
     if not fmt:
         return []
     e, off = fmt
-    cpu, ncmds = struct.unpack_from(e + "I", data, 4)[0], struct.unpack_from(e + "I", data, 16)[0]
-    s = {"arch": CPU.get(cpu, hex(cpu)), "encrypted": None, "entitlements": None}
-    for _ in range(min(ncmds, 4096)):
-        if off + 8 > len(data):
-            break
-        cmd, size = struct.unpack_from(e + "II", data, off)
-        if cmd in (0x21, 0x2C):                            # LC_ENCRYPTION_INFO(_64)
-            s["encrypted"] = struct.unpack_from(e + "I", data, off + 16)[0] != 0
-        elif cmd == 0x1D:                                  # LC_CODE_SIGNATURE
-            doff, dsize = struct.unpack_from(e + "II", data, off + 8)
-            s["entitlements"] = _entitlements(data[doff:doff + dsize])
-        if size < 8:
-            break
-        off += size
+    if len(data) < off:
+        return [{"arch": None, "error": "Mach-O header truncated"}]
+    cpu, sub, _ft, ncmds = struct.unpack_from(e + "IIII", data, 4)
+    s = {"arch": arch_name(cpu, sub), "encrypted": None, "entitlements": None}
+    try:
+        for _ in range(min(ncmds, 4096)):
+            if off + 8 > len(data):
+                break
+            cmd, size = struct.unpack_from(e + "II", data, off)
+            if cmd in (0x21, 0x2C):                        # LC_ENCRYPTION_INFO(_64)
+                s["encrypted"] = struct.unpack_from(e + "I", data, off + 16)[0] != 0
+            elif cmd == 0x1D:                              # LC_CODE_SIGNATURE
+                doff, dsize = struct.unpack_from(e + "II", data, off + 8)
+                try:
+                    s["entitlements"] = _entitlements(data[doff:doff + dsize])
+                except Exception as ex:
+                    s["entitlements_error"] = _err(ex)
+            if size < 8:
+                break
+            off += size
+    except Exception as ex:
+        s["load_commands_error"] = _err(ex)
     return [s]
 
 
 def macho_slices(data):
-    if data[:4] == b"\xca\xfe\xba\xbe" and struct.unpack_from(">I", data, 4)[0] < 45:
+    m = data[:4]
+    fat64 = m == b"\xca\xfe\xba\xbf"
+    if fat64 or (m == b"\xca\xfe\xba\xbe" and len(data) >= 8 and struct.unpack_from(">I", data, 4)[0] < 45):
+        fmt, stride = (">IIQQI", 32) if fat64 else (">IIIII", 20)
         out = []
         for i in range(min(struct.unpack_from(">I", data, 4)[0], 16)):
-            _cpu, _sub, off, size, _al = struct.unpack_from(">IIIII", data, 8 + i * 20)
-            out.extend(_thin(data[off:off + size]))
+            try:
+                cpu, sub, off, size, _al = struct.unpack_from(fmt, data, 8 + i * stride)
+                sl = _thin(data[off:off + size]) or [{"arch": arch_name(cpu, sub), "error": "no Mach-O at slice offset"}]
+            except Exception as ex:
+                sl = [{"arch": None, "error": _err(ex)}]
+            out.extend(sl)
         return out
     return _thin(data)
 
 
+def _plist_dict(pb):
+    pl = plistlib.loads(pb)
+    if not isinstance(pl, dict):
+        raise ValueError("Info.plist root is %s, not a dictionary" % type(pl).__name__)
+    return pl
+
+
+def _url_schemes(pl):
+    types = pl.get("CFBundleURLTypes") or []
+    return sorted({s for t in (types if isinstance(types, list) else []) if isinstance(t, dict)
+                   for s in (t.get("CFBundleURLSchemes") if isinstance(t.get("CFBundleURLSchemes"), list) else [])
+                   if isinstance(s, str)})
+
+
 def apple_summary(plist_bytes, exe_bytes, frameworks, kind):
-    pl = plistlib.loads(plist_bytes)
-    ats = pl.get("NSAppTransportSecurity") or {}
+    pl = _plist_dict(plist_bytes)
     r = {
         "platform": kind,
         "bundle_id": pl.get("CFBundleIdentifier"),
@@ -236,18 +347,37 @@ def apple_summary(plist_bytes, exe_bytes, frameworks, kind):
         "version": pl.get("CFBundleShortVersionString"), "build": pl.get("CFBundleVersion"),
         "min_os": pl.get("MinimumOSVersion") or pl.get("LSMinimumSystemVersion"),
         "executable": pl.get("CFBundleExecutable"),
-        "url_schemes": sorted({s for t in pl.get("CFBundleURLTypes") or [] for s in t.get("CFBundleURLSchemes") or []}),
-        "ats_allows_arbitrary_loads": ats.get("NSAllowsArbitraryLoads"),
-        "ats_exception_domains": sorted((ats.get("NSExceptionDomains") or {}).keys()),
-        "background_modes": pl.get("UIBackgroundModes") or [],
-        "privacy_permissions": sorted(k for k in pl if k.startswith("NS") and k.endswith("UsageDescription")),
-        "frameworks": sorted(frameworks),
-        "slices": macho_slices(exe_bytes) if exe_bytes else [],
     }
-    if any(s["encrypted"] for s in r["slices"]):
+
+    def field(key, fn, default):
+        # one malformed value (or truncated binary) costs only its own field, never the report
+        try:
+            r[key] = fn()
+        except Exception as e:
+            r[key] = default
+            r[key + "_error"] = _err(e)
+
+    ats = pl.get("NSAppTransportSecurity")
+    ats = ats if isinstance(ats, dict) else {}
+    exc = ats.get("NSExceptionDomains")
+    field("url_schemes", lambda: _url_schemes(pl), [])
+    field("ats_allows_arbitrary_loads", lambda: ats.get("NSAllowsArbitraryLoads"), None)
+    field("ats_exception_domains", lambda: sorted(str(k) for k in (exc if isinstance(exc, dict) else {})), [])
+    bg = pl.get("UIBackgroundModes")
+    field("background_modes", lambda: [str(x) for x in bg] if isinstance(bg, list) else [], [])
+    field("privacy_permissions", lambda: sorted(k for k in pl if isinstance(k, str) and k.startswith("NS")
+                                                and k.endswith("UsageDescription")), [])
+    field("frameworks", lambda: sorted(frameworks), [])
+    field("slices", lambda: macho_slices(exe_bytes) if exe_bytes else [], [])
+    if any(s.get("encrypted") for s in r["slices"]):
         r["note"] = ("App Store encrypted: the code is not readable statically; the metadata here still is. "
                      "Analyze a decrypted build you are authorized to use (see references/ios.md).")
     return r
+
+
+def _exe_name(pl):
+    v = pl.get("CFBundleExecutable")
+    return v if isinstance(v, str) and "/" not in v and v not in ("", ".", "..") else ""
 
 
 def inspect_ipa(path):
@@ -257,24 +387,38 @@ def inspect_ipa(path):
         if not plist:
             return {"platform": "ios", "error": "no Payload/*.app/Info.plist"}
         app = plist[:-len("Info.plist")]
-        pb = z.read(plist)
-        exe = app + (plistlib.loads(pb).get("CFBundleExecutable") or "")
-        eb = z.read(exe) if exe in names else b""
+        pb, too_big = _read_member(z, plist, MAX_META_BYTES)
+        if too_big:
+            return {"platform": "ios", "error": too_big}
+        exe = app + _exe_name(_plist_dict(pb))
+        eb, truncated = _read_member(z, exe, MAX_EXE_BYTES, truncate=True) if exe != app and exe in names else (b"", None)
         fws = {n[len(app) + 11:].split("/")[0] for n in names if n.startswith(app + "Frameworks/") and ".framework/" in n}
-    return apple_summary(pb, eb, fws, "ios")
+    r = apple_summary(pb, eb, fws, "ios")
+    if truncated:
+        r["executable_truncated"] = truncated
+    return r
 
 
 def inspect_app_dir(root):
     mac = os.path.isfile(os.path.join(root, "Contents", "Info.plist"))
     base = os.path.join(root, "Contents") if mac else root
     with open(os.path.join(base, "Info.plist"), "rb") as f:
-        pb = f.read()
-    exe_name = plistlib.loads(pb).get("CFBundleExecutable") or ""
+        pb = f.read(MAX_META_BYTES + 1)
+    if len(pb) > MAX_META_BYTES:
+        return {"platform": "macos" if mac else "ios", "error": "Info.plist over the %d-byte limit" % MAX_META_BYTES}
+    exe_name = _exe_name(_plist_dict(pb))
     exe = os.path.join(base, "MacOS", exe_name) if mac else os.path.join(base, exe_name)
-    eb = open(exe, "rb").read() if exe_name and os.path.isfile(exe) else b""
     fdir = os.path.join(base, "Frameworks")
     fws = [d for d in os.listdir(fdir) if d.endswith(".framework")] if os.path.isdir(fdir) else []
-    return apple_summary(pb, eb, fws, "macos" if mac else "ios")
+    if exe_name and os.path.isfile(exe):
+        with open(exe, "rb") as f:
+            eb = _map_file(f)
+            try:
+                return apple_summary(pb, eb, fws, "macos" if mac else "ios")
+            finally:
+                if isinstance(eb, mmap.mmap):
+                    eb.close()
+    return apple_summary(pb, b"", fws, "macos" if mac else "ios")
 
 
 # --------------------------------------------------------------------------
@@ -298,12 +442,23 @@ def _vs_value(blob, key):
 
 def inspect_pe(path):
     with open(path, "rb") as f:
-        data = f.read()
+        data = _map_file(f)                                # mapped, not read: game executables are huge
+        try:
+            return _pe_summary(data, path)
+        finally:
+            if isinstance(data, mmap.mmap):
+                data.close()
+
+
+def _pe_summary(data, path):
     r = {"platform": "windows", "file": os.path.basename(path)}
-    i = data.find("VS_VERSION_INFO".encode("utf-16-le"))
-    if i >= 6:
-        blob = data[i - 6:i - 6 + struct.unpack_from("<H", data, i - 6)[0]]
-        r["version_info"] = {k: v for k in VS_KEYS for v in [_vs_value(blob, k)] if v}
+    try:
+        i = data.find("VS_VERSION_INFO".encode("utf-16-le"))
+        if i >= 6:
+            blob = data[i - 6:i - 6 + struct.unpack_from("<H", data, i - 6)[0]]
+            r["version_info"] = {k: v for k in VS_KEYS for v in [_vs_value(blob, k)] if v}
+    except Exception as e:
+        r["version_info_error"] = _err(e)
     try:
         pe = struct.unpack_from("<I", data, 0x3C)[0]
         opt = pe + 24
@@ -323,6 +478,8 @@ def inspect_pe(path):
             r["certificate_names"] = names[:6]
     except struct.error:
         r["error"] = "PE headers truncated"
+    except Exception as e:
+        r["signature_error"] = _err(e)
     m = re.search(rb"requestedExecutionLevel\s+level=[\"'](\w+)[\"']", data)
     if m:
         r["execution_level"] = m.group(1).decode()
@@ -332,13 +489,15 @@ def inspect_pe(path):
 # --------------------------------------------------------------------------
 # Games: Unity, Unreal, Godot
 # --------------------------------------------------------------------------
-def inspect_game_dir(root):
+def inspect_game_dir(root, skipped=None):
     found, files = {}, []
-    for dp, dn, fn in os.walk(root):
+    for dp, dn, fn in os.walk(root, followlinks=False):
         if dp[len(root):].count(os.sep) > 4:
             dn[:] = []
             continue
         files.extend(os.path.join(dp, f) for f in fn)
+    skipped = {} if skipped is None else skipped
+    files = _regular_in_tree(files, root, skipped)
     rel = {os.path.relpath(p, root).replace("\\", "/"): p for p in files}
     low = {k.lower(): v for k, v in rel.items()}
 
@@ -385,6 +544,7 @@ def inspect_game_dir(root):
                      "next": "unpack the .pck and recover GDScript with GDRE Tools"}
     if found:
         found["platform"] = "game"
+        found.update(skipped)
     return found
 
 
@@ -396,18 +556,21 @@ def inspect(path):
         if os.path.isfile(os.path.join(path, "Contents", "Info.plist")) or \
                 os.path.isfile(os.path.join(path, "Info.plist")):
             return inspect_app_dir(path)
-        game = inspect_game_dir(path)
+        skipped = {}
+        game = inspect_game_dir(path, skipped)
         if game:
             return game
         exes = []
-        for dp, dn, fn in os.walk(path):
+        for dp, dn, fn in os.walk(path, followlinks=False):
             if dp[len(path):].count(os.sep) > 2:
                 dn[:] = []
             exes.extend(os.path.join(dp, f) for f in fn if f.lower().endswith(".exe"))
+        exes = _regular_in_tree(exes, path, {})            # same files the game walk already counted
         if exes:
             main = max(exes, key=os.path.getsize)
             r = inspect_pe(main)
             r["note"] = "inspected the largest .exe in the folder; run triage.py on the folder for the rest"
+            r.update(skipped)
             return r
         return {"error": "no app bundle, game, or executable recognized; run triage.py on it"}
     with open(path, "rb") as f:
@@ -421,9 +584,18 @@ def inspect(path):
             return inspect_apk(path)
         if any(n.startswith("Payload/") for n in names):
             return inspect_ipa(path)
-    if head in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe"):
+    if head in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf"):
+        r = {"platform": "macho"}
         with open(path, "rb") as f:
-            return {"platform": "macho", "slices": macho_slices(f.read())}
+            data = _map_file(f)
+            try:
+                r["slices"] = macho_slices(data)
+            except Exception as e:
+                r["slices"], r["slices_error"] = [], _err(e)
+            finally:
+                if isinstance(data, mmap.mmap):
+                    data.close()
+        return r
     return {"error": "not an APK, IPA, .app, PE, Mach-O, or game folder; run triage.py on it"}
 
 
@@ -453,10 +625,15 @@ def main(argv=None):
     if not os.path.exists(args.path):
         print("error: no such path: %s" % args.path, file=sys.stderr)
         return 2
+    if not os.path.isdir(args.path) and not stat.S_ISREG(os.stat(args.path).st_mode):
+        print("error: not a regular file or directory (FIFO, device or socket): %s" % args.path, file=sys.stderr)
+        return 2
     try:
         r = inspect(args.path)
     except (zipfile.BadZipFile, plistlib.InvalidFileException, OSError, ValueError, struct.error) as e:
         r = {"error": "%s: %s" % (type(e).__name__, e)}
+    except Exception as e:                                 # last resort: still emit a report, never a traceback
+        r = {"error": "internal error (partial input not reported): %s: %s" % (type(e).__name__, e)}
     if args.json:
         print(json.dumps(r, indent=2, default=str))
     else:
