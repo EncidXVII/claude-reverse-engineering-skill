@@ -135,6 +135,8 @@ def test_versions():
     check("plugin.json is valid JSON", pj is not None, err)
     versions = {"plugin.json": (pj or {}).get("version"), "SKILL.md metadata.version": skill_md_version()}
     mp, _ = load_json(os.path.join(ROOT, ".claude-plugin", "marketplace.json"))
+    if "version" in (mp or {}).get("metadata", {}):
+        versions["marketplace.json metadata.version"] = mp["metadata"]["version"]
     for p in (mp or {}).get("plugins", []):
         if p.get("name") == "reverse-engineering" and "version" in p:
             versions["marketplace.json plugin entry"] = p["version"]
