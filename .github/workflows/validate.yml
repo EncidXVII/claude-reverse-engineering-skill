@@ -6,10 +6,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: test (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -31,9 +35,13 @@ jobs:
       - name: Run skill test suite (scripts + structure)
         run: python tests/test_scripts.py
 
+      - name: Check evals, versions and Ghidra script sync
+        run: python tests/test_meta.py
+
   lint-frontmatter:
     name: validate SKILL.md frontmatter
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
 
@@ -73,6 +81,7 @@ jobs:
   ghidra-export:
     name: Ghidra headless export (real Ghidra 12.1.4)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       GHIDRA_SHA256: ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db
     steps:
@@ -86,7 +95,7 @@ jobs:
       # Fetched by a release-download action, so the repository holds no shell
       # download command; the checksum below still pins the exact release.
       - name: Download Ghidra release
-        uses: robinraju/release-downloader@v1
+        uses: robinraju/release-downloader@28fc21f50d76778e7023361aa1f863e717d3d56f # v1.13
         with:
           repository: NationalSecurityAgency/ghidra
           tag: Ghidra_12.1.4_build
@@ -117,18 +126,23 @@ jobs:
           grep -q "^-- FUNCTIONS CALLING NOTABLE APIs" "$RUNNER_TEMP/decomp.txt"
           tail -1 "$RUNNER_TEMP/decomp.txt" | grep -E '^/\* exported [1-9][0-9]* functions'
 
-  # Optional: validate the Claude Code plugin manifests if the CLI is present.
-  # Non-blocking — the CLI isn't available on hosted runners by default.
+  # Validates both manifests with a pinned Claude Code CLI (no login needed).
   plugin-validate:
-    name: claude plugin validate (optional)
+    name: claude plugin validate
     runs-on: ubuntu-latest
-    continue-on-error: true
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@2.1.156
+
+      # stdin closed: the CLI can otherwise wait on it in CI.
       - name: claude plugin validate
         run: |
-          if command -v claude >/dev/null 2>&1; then
-            claude plugin validate .
-          else
-            echo "claude CLI not installed on this runner; skipping (run 'claude plugin validate .' locally)."
-          fi
+          claude plugin validate . < /dev/null
+          claude plugin validate .claude-plugin/plugin.json < /dev/null

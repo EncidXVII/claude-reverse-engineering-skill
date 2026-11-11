@@ -40,6 +40,46 @@
     "should_trigger": true
   },
   {
+    "query": "vendor shipped libcodec.so 4.2.1 and 4.2.2 with no changelog. i think 4.2.2 is a silent security fix \u2014 what actually changed between the two?",
+    "should_trigger": true
+  },
+  {
+    "query": "write a YARA rule and an IOC list for ~/cases/2291/dropper.bin so the SOC can hunt for it across the fleet",
+    "should_trigger": true
+  },
+  {
+    "query": "only the jar survived for our old reporting tool (reporting-tool-1.4.jar), the source repo is gone. can you get readable code back so we can see how it builds the export SQL?",
+    "should_trigger": true
+  },
+  {
+    "query": "Acme.Sync.dll is a closed .NET assembly our service loads and it hangs on some hosts \u2014 what does its Initialize() actually do?",
+    "should_trigger": true
+  },
+  {
+    "query": "dist/agent.exe was built with pyinstaller by someone who left, and the .py files are gone. can we get them back?",
+    "should_trigger": true
+  },
+  {
+    "query": "stripped Go binary, ghidra just shows thousands of FUN_ functions. how do i get the real function names back?",
+    "should_trigger": true
+  },
+  {
+    "query": "flutter app, libapp.so is inside the apk. where's the api base url and how is the auth token built?",
+    "should_trigger": true
+  },
+  {
+    "query": "capture.pcapng is traffic between our HMI and a PLC on tcp/20256, undocumented vendor protocol. help me work out the message framing",
+    "should_trigger": true
+  },
+  {
+    "query": "want to write a save editor for an old game i own. the .sav files look like a small header then a compressed blob \u2014 help me recover the file format (a few samples in ./saves)",
+    "should_trigger": true
+  },
+  {
+    "query": "ghidra mcp is connected with the firmware loaded. what does FUN_08012a40 do? it runs right before the uart writes",
+    "should_trigger": true
+  },
+  {
     "query": "refactor this Python module to remove the duplicated validation logic",
     "should_trigger": false
   },
@@ -77,6 +117,38 @@
   },
   {
     "query": "help me write a crackme challenge in C for my students to practice on",
+    "should_trigger": false
+  },
+  {
+    "query": "my C program segfaults in parse_args, here's main.c and the gdb backtrace \u2014 what's wrong?",
+    "should_trigger": false
+  },
+  {
+    "query": "we have 40k lines of COBOL from the 90s, extract the business rules for loan approval into a spec doc",
+    "should_trigger": false
+  },
+  {
+    "query": "our react app in prod throws this minified stack trace (main.3f9a1c.js:1:48213), how do i map it back to my source?",
+    "should_trigger": false
+  },
+  {
+    "query": "convert this hex string to base64: 48656c6c6f20776f726c64",
+    "should_trigger": false
+  },
+  {
+    "query": "here's the PDF spec for the TLV file format our partner uses, write a python parser for it",
+    "should_trigger": false
+  },
+  {
+    "query": "this hot loop in my rust crate is slow, here's the godbolt asm output \u2014 why isn't it vectorizing?",
+    "should_trigger": false
+  },
+  {
+    "query": "how do i obfuscate my javascript bundle before shipping so competitors can't easily copy it?",
+    "should_trigger": false
+  },
+  {
+    "query": "generate TypeScript types from this sample JSON response from our internal API",
     "should_trigger": false
   }
 ]

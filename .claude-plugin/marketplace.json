@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "reverse-engineering",
-      "source": ".",
+      "source": "./",
       "description": "Reverse engineering skill for Claude Code and other AI coding agents.",
       "category": "security",
       "tags": [

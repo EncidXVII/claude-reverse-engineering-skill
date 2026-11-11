@@ -260,13 +260,14 @@ Issues and pull requests are welcome — new target types, better tool recommend
 
 ```bash
 python tests/test_scripts.py
+python tests/test_meta.py
 ```
 
 ```text
 .
 ├── .claude-plugin/          Claude Code plugin + marketplace manifests
 ├── .github/workflows/       CI: tests on Linux/macOS/Windows, frontmatter lint, real-Ghidra export
-├── evals/                   trigger evals for tuning the skill description
+├── evals/                   trigger and behavioral evals (see evals/README.md)
 ├── skills/reverse-engineering/
 │   ├── SKILL.md             entry point: workflow, routing, safety rules
 │   ├── references/          14 playbooks, loaded on demand
