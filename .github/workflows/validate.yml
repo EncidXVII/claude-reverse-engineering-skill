@@ -111,20 +111,35 @@ jobs:
           chmod +x "$G"/support/*.sh "$G/support/analyzeHeadless"
           find "$G/Ghidra" -path '*/os/linux_x86_64/*' -type f -exec chmod +x {} +
 
+      # Same commands as SKILL.md step 6 and native-binaries.md#ghidra-workflow.
       - name: Export a real binary with DecompileExport.java
         run: |
-          G="$RUNNER_TEMP/ghidra_12.1.4_PUBLIC"
-          mkdir -p "$RUNNER_TEMP/proj" "$RUNNER_TEMP/sample"
+          GHIDRA_INSTALL_DIR="$RUNNER_TEMP/ghidra_12.1.4_PUBLIC"
+          mkdir -p "$RUNNER_TEMP/sample"
           cp /usr/bin/true "$RUNNER_TEMP/sample/target"
-          "$G/support/analyzeHeadless" "$RUNNER_TEMP/proj" ci -import "$RUNNER_TEMP/sample/target" \
-            -scriptPath skills/reverse-engineering/scripts/ghidra \
-            -postScript DecompileExport.java "$RUNNER_TEMP/decomp.txt" -deleteProject
+          P=$(mktemp -d "${TMPDIR:-/tmp}/ghproj.XXXXXX")
+          echo "P=$P" >> "$GITHUB_ENV"
+          # -deleteProject left off so the next step can re-export from this project.
+          "$GHIDRA_INSTALL_DIR/support/analyzeHeadless" "$P" re -import "$RUNNER_TEMP/sample/target" \
+            -scriptPath skills/reverse-engineering/scripts/ghidra -log "$P/headless.log" \
+            -postScript DecompileExport.java "$P/decomp.txt"
           # analyzeHeadless exits 0 even if the script fails, so check the output itself.
-          test -s "$RUNNER_TEMP/decomp.txt"
-          grep -q "^-- IMPORTS" "$RUNNER_TEMP/decomp.txt"
-          grep -q "^-- MOST CALLED FUNCTIONS" "$RUNNER_TEMP/decomp.txt"
-          grep -q "^-- FUNCTIONS CALLING NOTABLE APIs" "$RUNNER_TEMP/decomp.txt"
-          tail -1 "$RUNNER_TEMP/decomp.txt" | grep -E '^/\* exported [1-9][0-9]* functions'
+          test -s "$P/headless.log"
+          test -s "$P/decomp.txt"
+          grep -q "^-- IMPORTS" "$P/decomp.txt"
+          grep -q "^-- MOST CALLED FUNCTIONS" "$P/decomp.txt"
+          grep -q "^-- FUNCTIONS CALLING NOTABLE APIs" "$P/decomp.txt"
+          tail -1 "$P/decomp.txt" | grep -E '^/\* exported [1-9][0-9]* functions'
+
+      - name: Re-export without re-analysis (name filter + function cap)
+        run: |
+          GHIDRA_INSTALL_DIR="$RUNNER_TEMP/ghidra_12.1.4_PUBLIC"
+          "$GHIDRA_INSTALL_DIR/support/analyzeHeadless" "$P" re -process target -noanalysis \
+            -scriptPath skills/reverse-engineering/scripts/ghidra -log "$P/reexport.log" \
+            -postScript DecompileExport.java "$P/re.txt" fun_ 3
+          grep -q "name contains 'fun_'" "$P/re.txt"
+          tail -1 "$P/re.txt" | grep -E '^/\* exported [1-3] functions'
+          rm -rf "$P"
 
   # Validates both manifests with a pinned Claude Code CLI (no login needed).
   plugin-validate:
