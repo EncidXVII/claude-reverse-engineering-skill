@@ -35,9 +35,6 @@ jobs:
       - name: Run skill test suite (scripts + structure)
         run: python tests/test_scripts.py
 
-      - name: Check evals, versions and Ghidra script sync
-        run: python tests/test_meta.py
-
   lint-frontmatter:
     name: validate SKILL.md frontmatter
     runs-on: ubuntu-latest

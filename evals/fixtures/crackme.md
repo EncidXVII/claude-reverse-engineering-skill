@@ -1,6 +1,16 @@
-/* Eval fixture for evals.json case 1. Build: cc -O1 -o crackme crackme.c && strip crackme
- * The password is XOR-encoded so `strings` alone does not reveal it.
- * Expected answer: password "r3v3rs3d", flag printed on success. */
+# Crackme fixture (evals.json case 1)
+
+Save the code below as `crackme.c` in an empty directory, then build it:
+
+```bash
+cc -O1 -o crackme crackme.c && strip crackme
+```
+
+The password is XOR-encoded so `strings` alone does not reveal it.
+Expected answer: password `r3v3rs3d`, flag printed on success.
+Give the agent only the built binary, not this file.
+
+```c
 #include <stdio.h>
 #include <string.h>
 
@@ -31,3 +41,4 @@ int main(void)
     puts("nope");
     return 1;
 }
+```

@@ -15,8 +15,8 @@ plus a `category` (`proceed`, `decline-part`, `ambiguous`). Run them manually or
 periodically, not in CI: give each `prompt` to an agent with the skill loaded
 (skill-creator's eval flow, or `claude -p` by hand), then have a grader check every
 `expectations` line against the transcript. No case ships a binary; `files` lists
-sources, paths relative to the repo root. For case 1, build
-`evals/fixtures/crackme.c` per its header comment into an empty directory and run
-the agent there, with the binary only (not the source).
+sources, paths relative to the repo root. For case 1, build the
+source in `evals/fixtures/crackme.md` into an empty directory and run the agent
+there, with the binary only (not the source).
 
-`python tests/test_meta.py` checks both files' schema and the trigger balance.
+`python tests/test_scripts.py` checks both files' schema and the trigger balance.

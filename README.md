@@ -260,7 +260,6 @@ Issues and pull requests are welcome — new target types, better tool recommend
 
 ```bash
 python tests/test_scripts.py
-python tests/test_meta.py
 ```
 
 ```text
