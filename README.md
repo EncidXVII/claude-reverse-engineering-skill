@@ -7,7 +7,7 @@ Binary analysis · APK & IPA decompilation · .NET / Java · Electron & WASM · 
 [![Validate](https://github.com/EncidXVII/claude-reverse-engineering-skill/actions/workflows/validate.yml/badge.svg)](https://github.com/EncidXVII/claude-reverse-engineering-skill/actions/workflows/validate.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Agent Skills](https://img.shields.io/badge/Agent%20Skills-open%20standard-8A2BE2)](https://agentskills.io)
-[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](#claude-code-recommended)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](#claude-code)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-3776AB)](#requirements)
 [![skills.sh](https://img.shields.io/badge/skills.sh-listed-111111)](https://www.skills.sh/encidxvii/claude-reverse-engineering-skill/reverse-engineering)
 
@@ -86,9 +86,9 @@ Any agent that can read a `SKILL.md` and run shell commands can use the full wor
 
 ## Install
 
-### Claude Code (recommended)
+### Claude Code
 
-Listed in Anthropic's official plugin directory for Claude Code, Cowork and the Claude apps: search for **Reverse Engineering** there. Or install it as a plugin straight from this repository — updates arrive automatically. Inside Claude Code, run:
+Install it as a plugin straight from this repository to get the latest version — updates arrive automatically. Inside Claude Code, run:
 
 ```text
 /plugin marketplace add EncidXVII/claude-reverse-engineering-skill
@@ -110,9 +110,11 @@ cp -r claude-reverse-engineering-skill/skills/reverse-engineering ~/.claude/skil
 cp -r claude-reverse-engineering-skill/skills/reverse-engineering .claude/skills/          # project
 ```
 
+Anthropic's plugin directory (Claude Code, Cowork, Claude apps) also lists it as **Reverse Engineering**, but only an older version (2.2.3) without the later fixes. Use one of the options above for the latest.
+
 ### Claude.ai and Claude Desktop
 
-Add **Reverse Engineering** from Anthropic's plugin directory. Or download the repository, zip the `skills/reverse-engineering` folder, and upload it under **Settings → Capabilities → Skills**.
+Download the repository, zip the `skills/reverse-engineering` folder, and upload it under **Settings → Capabilities → Skills**. Anthropic's plugin directory also has **Reverse Engineering**, but only an older version (2.2.3).
 
 ### Codex, Cursor, Gemini CLI, GitHub Copilot, OpenCode, Windsurf, Kiro
 
