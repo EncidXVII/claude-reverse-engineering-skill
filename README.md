@@ -195,12 +195,12 @@ SUGGESTED NEXT STEPS
     headless with scripts/ghidra/DecompileExport.java (SKILL.md step 6)
 ```
 
-Run them yourself:
+Run them yourself (on Windows, use `py -3` instead of `python3`):
 
 ```bash
-python skills/reverse-engineering/scripts/check_tools.py
-python -I skills/reverse-engineering/scripts/triage.py path/to/file-or-folder
-python -I skills/reverse-engineering/scripts/extract_endpoints.py path/to/decompiled-output
+python3 -I skills/reverse-engineering/scripts/check_tools.py
+python3 -I skills/reverse-engineering/scripts/triage.py path/to/file-or-folder
+python3 -I skills/reverse-engineering/scripts/extract_endpoints.py path/to/decompiled-output
 ```
 
 ## How it works
