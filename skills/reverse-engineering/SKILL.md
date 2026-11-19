@@ -20,7 +20,7 @@ compatibility: >-
   Works with Claude Code, Claude.ai, Codex, Cursor, Gemini CLI, GitHub Copilot, and
   other Agent Skills clients.
 metadata:
-  version: "2.2.8"
+  version: "2.2.9"
   category: security
 ---
 
@@ -36,7 +36,8 @@ and back every claim with an address, offset, or captured request.
 (Codex, Cursor, Gemini CLI, Copilot, OpenCode…) replace it yourself with the
 absolute path of this file's directory — left as a shell variable it expands to
 nothing. Paths like `scripts/triage.py` and `references/android.md` are relative
-to that folder. Commands say `python3`; on Windows use `py -3`.
+to that folder. Commands say `python3`; on Windows use `py -3`, or `python` if
+there is no `py` launcher.
 
 ## Scope
 
@@ -106,7 +107,8 @@ documenting how a check works in a research write-up, defensive detection).
    for a debugger/tracer/hook when values are computed at runtime or code is
    packed/obfuscated. To read a native target without a GUI, batch-export its
    decompiled C (set `GHIDRA_INSTALL_DIR` to the Ghidra path check_tools reports,
-   or your install dir; on Windows, `analyzeHeadless.bat` and a folder you make):
+   or your install dir; on Windows run `analyzeHeadless.bat` and use any new empty
+   folder as `$P`):
    ```bash
    P=$(mktemp -d "${TMPDIR:-/tmp}/ghproj.XXXXXX")
    "$GHIDRA_INSTALL_DIR/support/analyzeHeadless" "$P" re -import <target> \

@@ -47,7 +47,7 @@ Built for authorized work: security research, CTFs, malware analysis, interopera
 - **Headless by design.** Agents can't click through a GUI. The skill ships a Ghidra post-script that exports decompiled C, imports, and strings to a text file — tested against Ghidra 12.1.4, with a CI job that re-runs it on every push — plus non-interactive commands for rizin, jadx, Frida, gdb, and lldb.
 - **Drives real RE tools over MCP.** When rea, GhidraMCP, IDA Pro MCP, radare2-mcp, or jadx MCP is connected, the agent decompiles, renames, and follows cross-references directly — the skill supplies the method, the server does the calls.
 - **Finds the network surface fast.** Pulls Retrofit annotations, HTTP client calls, URLs, hosts, auth headers, and crypto usage out of decompiled code and minified JS, each with `file:line`.
-- **Safe with untrusted samples.** Isolation rules for malware, `python -I` against import hijacking, and an explicit rule that text inside a binary is data — never instructions — so analyzed files can't prompt-inject the agent.
+- **Safe with untrusted samples.** Isolation rules for malware, `python3 -I` against import hijacking, and an explicit rule that text inside a binary is data — never instructions — so analyzed files can't prompt-inject the agent.
 - **Grounded output.** Every finding must cite an address, offset, symbol, or request the tools actually showed, say how it's known (decompiler, assembly, runtime, or inferred), and name what wasn't verified.
 - **Tested on real tools, not just docs.** 100+ automated checks covering every script and the skill's structure, run in CI on Linux, macOS, and Windows, plus a CI job that runs the Ghidra export against a real Ghidra release on every push.
 - **Light on context.** One short `SKILL.md`; the 14 playbooks load only when a task needs them, so the skill costs almost nothing until it's used.
@@ -195,7 +195,7 @@ SUGGESTED NEXT STEPS
     headless with scripts/ghidra/DecompileExport.java (SKILL.md step 6)
 ```
 
-Run them yourself (on Windows, use `py -3` instead of `python3`):
+Run them yourself (on Windows, use `py -3` or `python` instead of `python3`):
 
 ```bash
 python3 -I skills/reverse-engineering/scripts/check_tools.py
@@ -211,7 +211,7 @@ python3 -I skills/reverse-engineering/scripts/extract_endpoints.py path/to/decom
 4. **MCP first** — drive Ghidra/IDA/radare2/jadx directly when a server is connected.
 5. **Route** — open the playbook for the target type.
 6. **Static first, dynamic to confirm** — headless decompilation, then hooks or a debugger in isolation when values only exist at runtime.
-7. **Record** — findings with addresses and offsets, using the [report template](skills/reverse-engineering/assets/findings-template.md).
+7. **Answer** — the direct answer first, backed by addresses and offsets; a full [report template](skills/reverse-engineering/assets/findings-template.md) for malware, incident response, or long investigations.
 
 ## Requirements
 
@@ -267,7 +267,7 @@ python tests/test_scripts.py
 ```text
 .
 ├── .claude-plugin/          Claude Code plugin + marketplace manifests
-├── .github/workflows/       CI: tests on Linux/macOS/Windows, frontmatter lint, real-Ghidra export
+├── .github/workflows/       CI: tests on Linux/macOS/Windows, frontmatter lint, plugin validation, real-Ghidra export
 ├── evals/                   trigger and behavioral evals (see evals/README.md)
 ├── skills/reverse-engineering/
 │   ├── SKILL.md             entry point: workflow, routing, safety rules
